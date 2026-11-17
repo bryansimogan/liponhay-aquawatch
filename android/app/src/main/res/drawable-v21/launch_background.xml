@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Plain colour, no icon. The branding is SplashScreen in the Flutter layer,
+    which can animate; an icon here would show first, static, and be replaced a
+    frame later by a different image — two openings instead of one.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/splash_background" />
+</layer-list>

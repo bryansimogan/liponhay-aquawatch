@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        The window colour Android paints before Flutter's first frame.
+
+        It was plain white, which flashed for a moment on every launch and then
+        cut to the deep-teal splash. Matching the splash means the app simply
+        appears rather than blinking white first.
+    -->
+    <color name="splash_background">#0F4C5C</color>
+</resources>
