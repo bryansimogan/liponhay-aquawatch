@@ -66,6 +66,7 @@ class _MortalityScreenState extends State<MortalityScreen> {
   MortalityRecord? _editing;
 
   final _countController = TextEditingController();
+  final _notesController = TextEditingController();
   String? _pendingId;
   DateTime? _reportedAt;
   MortalityAnalysis? _pendingAnalysis;
@@ -109,9 +110,13 @@ class _MortalityScreenState extends State<MortalityScreen> {
       _records = initial;
       _loading = false;
     });
+    _store.replaceMortalityRecords(pondId, initial);
     if (_simMode) return;
     _subscription = _firebase.mortalityStream(pondId).listen((records) {
-      if (mounted && pondId == _pondId) setState(() => _records = records);
+      if (mounted && pondId == _pondId) {
+        setState(() => _records = records);
+        _store.replaceMortalityRecords(pondId, records);
+      }
     }, onError: (Object _) {});
   }
 
@@ -124,6 +129,7 @@ class _MortalityScreenState extends State<MortalityScreen> {
       ]),
     );
     if (mounted && _pondId == pondId) setState(() => _records = records);
+    _store.replaceMortalityRecords(pondId, records);
   }
 
   /// Records in the active period, newest first.
@@ -154,6 +160,7 @@ class _MortalityScreenState extends State<MortalityScreen> {
   void dispose() {
     unawaited(_subscription?.cancel());
     _countController.dispose();
+    _notesController.dispose();
     super.dispose();
   }
 
@@ -190,6 +197,7 @@ class _MortalityScreenState extends State<MortalityScreen> {
   // ── Form actions ──
 
   void _openForm({MortalityRecord? existing}) {
+    if (_saving || _deletingId != null) return;
     setState(() {
       _editing = existing;
       _formOpen = true;
@@ -197,6 +205,7 @@ class _MortalityScreenState extends State<MortalityScreen> {
       _reportedAt = null;
       _pendingAnalysis = null;
       _countController.text = existing == null ? '' : '${existing.count}';
+      _notesController.text = existing?.notes ?? '';
     });
   }
 
@@ -246,7 +255,7 @@ class _MortalityScreenState extends State<MortalityScreen> {
             (analysis!.findings.isEmpty
                 ? ''
                 : analysis.findings.first.factor.english),
-        notes: existing?.notes ?? '',
+        notes: _notesController.text.trim(),
         timestamp: existing?.timestamp ?? reportedAt.millisecondsSinceEpoch,
         analysis: analysis,
       );
@@ -263,6 +272,7 @@ class _MortalityScreenState extends State<MortalityScreen> {
                 pondId: record.pondId,
                 recordId: record.id,
                 count: record.count,
+                notes: record.notes,
               );
         await write.timeout(const Duration(seconds: 12));
       }
@@ -294,7 +304,7 @@ class _MortalityScreenState extends State<MortalityScreen> {
               'Na-save ang tala ng namatay na isda.',
             ),
     );
-    if (existing == null) await _showRecordDetails(record, justSaved: true);
+    if (existing == null) await _showRecordDetails(record);
   }
 
   Future<MortalityAnalysis> _analyze(
@@ -302,30 +312,25 @@ class _MortalityScreenState extends State<MortalityScreen> {
     String species,
     DateTime eventAt,
   ) async {
-    final since = eventAt.subtract(MortalityAnalysis.maxGap);
-    final end = eventAt.add(MortalityAnalysis.maxGap);
-    final now = _simMode
-        ? DateTime.fromMillisecondsSinceEpoch(_store.nowMs)
-        : DateTime.now();
-    final until = end.isAfter(now) ? now : end;
+    final captured = !_simMode && pondId == 'pond1' && _store.hasCurrentReading
+        ? MortalityReading.fromSensor(_store.currentReading)
+        : null;
     final readings = _simMode
         ? _store.demoReadings
             .map(MortalityReading.fromSensor)
             .whereType<MortalityReading>()
-        : await _firebase.getMortalityHistory(pondId,
-            since: since, until: until);
-    return MortalityAnalysis.evaluate(readings,
-        eventAt: eventAt, species: species);
+        : await _firebase.getMortalityReadings(pondId, eventAt: eventAt);
+    return MortalityAnalysis.evaluate([
+      if (captured != null) captured,
+      ...readings,
+    ], eventAt: eventAt, species: species);
   }
 
-  Future<MortalityAnalysis?> _analysisFor(
-      MortalityRecord record, bool justSaved) async {
+  Future<MortalityAnalysis?> _analysisFor(MortalityRecord record) async {
     final eventAt = record.eventAt;
     if (eventAt == null) return null;
     final saved = _resolvedAnalyses[record.id] ?? record.analysis;
-    if (saved != null &&
-        saved.eventTimestamp == eventAt.millisecondsSinceEpoch &&
-        (justSaved || (saved.reading != null && !saved.readingAfterEvent))) {
+    if (saved != null && saved.usesEventMatch) {
       return saved;
     }
     final analysis = await _analyze(record.pondId, record.species, eventAt);
@@ -721,6 +726,17 @@ class _MortalityScreenState extends State<MortalityScreen> {
               hintText: L('e.g. 3', 'hal. 3'),
             ),
           ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _notesController,
+            enabled: !_saving,
+            minLines: 1,
+            maxLines: 3,
+            decoration: InputDecoration(
+              labelText: L('Remarks or observations (optional)',
+                  'Mga tala o obserbasyon (opsyonal)'),
+            ),
+          ),
           if (!isEditing) ...[
             const SizedBox(height: 10),
             Text(
@@ -852,6 +868,10 @@ class _MortalityScreenState extends State<MortalityScreen> {
           Text(L(
               'The available reading was taken after the event. A reading from the time of the event or shortly before is needed to suggest a cause.',
               'Pagkatapos ng insidente nakuha ang reading. Kailangan ang reading noong insidente o ilang minuto bago ito para makapagmungkahi ng sanhi.'))
+        else if (analysis.readingOutdated)
+          Text(L(
+              'The latest available reading is more than 30 minutes older than this report. It is preserved here, but a fresh reading is needed to estimate a suspected cause.',
+              'Mahigit 30 minuto nang luma ang pinakabagong reading kumpara sa ulat. Naka-save ito rito, pero kailangan ng sariwang reading para matantiya ang posibleng sanhi.'))
         else if (!analysis.hasSpeciesProfile)
           Text(L(
               'A water quality profile for this species is needed to assess these readings.',
@@ -860,19 +880,27 @@ class _MortalityScreenState extends State<MortalityScreen> {
           Text(L(
               'The closest recorded reading at or before the event was compared with the tilapia monitoring limits.',
               'Inihambing ang pinakamalapit na reading noong insidente o bago ito sa mga limitasyon para sa tilapia.')),
+          if (!reading.hasMonitoredParameters)
+            Padding(
+              padding: const EdgeInsets.only(top: 7),
+              child: Text(L(
+                  'This snapshot is incomplete. Only the measured parameters can be assessed.',
+                  'Kulang ang snapshot na ito. Ang mga parameter lang na nasukat ang maaaring suriin.')),
+            ),
           if (findings.isEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 7),
               child: Text(analysis.insufficient
                   ? L('Some monitored parameters are missing from this reading.',
                       'Kulang ang isa o higit pang sinusubaybayang parameter sa reading.')
-                  : L('The recorded parameters were within their monitoring limits.',
-                      'Nasa saklaw ang mga naitalang parameter.')),
+                  : L('The recorded parameters were within their monitoring limits. Disease, infection, handling stress, or other factors require a separate investigation.',
+                      'Nasa saklaw ang mga naitalang parameter. Kailangan ng hiwalay na pagsusuri para sa sakit, impeksiyon, stress sa paghawak, o iba pang salik.')),
             ),
           for (final finding in findings)
             Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: Text(_findingExplanation(finding, reading)),
+              child: Text(
+                  '${_findingExplanation(finding, reading)} ${_healthEffect(finding.factor)}'),
             ),
           if (findings.isNotEmpty)
             Padding(
@@ -931,6 +959,30 @@ class _MortalityScreenState extends State<MortalityScreen> {
       '$label · Ang $value ay $direction limitasyong $limit ($severity).',
     );
   }
+
+  String _healthEffect(MortalityFactor factor) => switch (factor) {
+        MortalityFactor.lowOxygen => L(
+            'Low oxygen can cause gasping, stress, and suffocation.',
+            'Maaaring magdulot ng paghabol ng hangin, stress, at pagkamatay ang kakulangan ng oxygen.'),
+        MortalityFactor.highOxygen => L(
+            'An elevated oxygen reading warrants checking gas saturation and meter calibration.',
+            'Kailangang suriin ang gas saturation at calibration ng meter kapag mataas ang oxygen reading.'),
+        MortalityFactor.highAmmonia => L(
+            'Un-ionized ammonia can damage gills and interfere with breathing.',
+            'Maaaring makasira ng hasang at makaapekto sa paghinga ang un-ionized ammonia.'),
+        MortalityFactor.highTemperature => L(
+            'Warm water raises oxygen demand while holding less oxygen.',
+            'Tumataas ang pangangailangan ng isda sa oxygen habang mas kaunti ang oxygen sa mainit na tubig.'),
+        MortalityFactor.lowTemperature => L(
+            'Cold water can suppress feeding and weaken the fish’s stress response.',
+            'Maaaring humina ang pagkain at kakayahang makayanan ang stress kapag malamig ang tubig.'),
+        MortalityFactor.highPh => L(
+            'High pH can irritate the gills and increase the toxic fraction of any ammonia present.',
+            'Maaaring mairita ang hasang at tumaas ang nakalalasong bahagi ng ammonia kapag mataas ang pH.'),
+        MortalityFactor.lowPh => L(
+            'Acidic water can irritate the gills and disrupt the fish’s salt balance.',
+            'Maaaring mairita ang hasang at maapektuhan ang balanse ng asin sa katawan ng isda kapag acidic ang tubig.'),
+      };
 
   String _prevention(MortalityFactor factor) => switch (factor) {
         MortalityFactor.lowOxygen => L(
@@ -1094,9 +1146,8 @@ class _MortalityScreenState extends State<MortalityScreen> {
     );
   }
 
-  Future<void> _showRecordDetails(MortalityRecord r,
-      {bool justSaved = false}) async {
-    final analysis = _analysisFor(r, justSaved);
+  Future<void> _showRecordDetails(MortalityRecord r) async {
+    final analysis = _analysisFor(r);
     final eventAt = r.eventAt;
     await showModalBottomSheet<void>(
       context: context,

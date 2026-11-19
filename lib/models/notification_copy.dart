@@ -34,6 +34,8 @@ extension NotificationCopy on AppNotification {
   }
 }
 
+String localizeSystemMessage(String message) => _translate(message, _phrases);
+
 String _translate(String value, Map<String, String> englishToTagalog) {
   final replacements = isTagalog
       ? englishToTagalog
@@ -70,6 +72,11 @@ const _titles = {
 };
 
 const _phrases = {
+  'Detected from the sensor readings': 'Natukoy mula sa mga reading ng sensor',
+  'Unsafe again · verification reset':
+      'Hindi ligtas muli · na-reset ang pag-verify',
+  'The reading was still unsafe after the response window.':
+      'Hindi pa rin ligtas ang reading matapos ang itinakdang oras.',
   'Pond 1': 'Palaisdaan 1',
   'Temp ': 'Temperatura ',
   'Temperature': 'Temperatura',

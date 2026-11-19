@@ -11,10 +11,13 @@ import '../models/gsm_config.dart';
 import '../models/app_notification.dart';
 import '../models/sensor_data.dart';
 import '../models/mortality_analysis.dart';
+import '../models/mortality_record.dart';
+import '../models/management_logs.dart';
 import '../models/water_quality.dart';
 import '../data/response_content.dart';
 import 'firebase_service.dart';
 import 'i18n.dart';
+import 'offline_cache_service.dart';
 import 'sync_service.dart';
 
 /// A locally-logged fish death, used by the response centre and reports. Kept
@@ -51,7 +54,7 @@ class AppStore extends ChangeNotifier {
   AppStore({required this.simulation, DateTime Function()? clock})
       : _clock = clock ?? DateTime.now;
 
-  static const verificationPeriod = Duration(minutes: 10);
+  static const verificationPeriod = ManagementLogs.verificationPeriod;
   final DateTime Function() _clock;
   Duration _demoOffset = Duration.zero;
   int get nowMs => _clock().add(_demoOffset).millisecondsSinceEpoch;
@@ -108,7 +111,12 @@ class AppStore extends ChangeNotifier {
   Stocking stock = const Stocking(n: 1000, area: 250, date: '2026-09-20');
   GsmConfig promo = const GsmConfig();
 
-  final _unresolvedParameters = <String>{};
+  ManagementLogs _management = ManagementLogs();
+  StreamSubscription<ManagementLogs>? _managementSubscription;
+  StreamSubscription<List<MortalityRecord>>? _mortalitySubscription;
+  Future<void> _managementWrites = Future.value();
+  bool _disposed = false;
+  bool managementSyncFailed = false;
   Timer? _tick;
   Timer? _readingExpiry;
   StreamSubscription<SensorData?>? _liveReadings;
@@ -124,7 +132,16 @@ class AppStore extends ChangeNotifier {
     if (selectedLanguage == 'en' || selectedLanguage == 'tl') {
       appLang = selectedLanguage!;
     }
+    _management = ManagementLogs(
+        incidents: incidents, lastReadingAt: _management.lastReadingAt);
+    if (!simulation) {
+      final cached = await OfflineCacheService.mortality('pond1');
+      if (cached.isNotEmpty) replaceMortalityRecords('pond1', cached);
+    }
     if (simulation) {
+      _demoOffset = Duration(
+          milliseconds: max(
+              0, _management.lastReadingAt - _clock().millisecondsSinceEpoch));
       _demoLastReading = nowMs;
       _demoReadings.add(currentReading);
       _tick ??= Timer.periodic(
@@ -137,6 +154,24 @@ class AppStore extends ChangeNotifier {
   /// Starts after the live app has opened its Firebase session.
   void connectLive({Stream<SensorData?>? readings}) {
     if (simulation || _liveReadings != null) return;
+    if (readings == null) {
+      final firebase = FirebaseService();
+      _managementSubscription =
+          firebase.managementLogsStream('pond1').listen((state) {
+        if (state.lastReadingAt < _management.lastReadingAt) return;
+        _replaceIncidents(state);
+        managementSyncFailed = false;
+        _save();
+        notifyListeners();
+      }, onError: (Object _) {
+        managementSyncFailed = true;
+        notifyListeners();
+      });
+      _mortalitySubscription = firebase.mortalityStream('pond1').listen(
+            (records) => replaceMortalityRecords('pond1', records),
+            onError: (Object _) {},
+          );
+    }
     final stream = readings ?? FirebaseService().currentReadingStream('pond1');
     _liveReadings = stream.listen(
       _onLiveReading,
@@ -153,6 +188,7 @@ class AppStore extends ChangeNotifier {
     final maxAge = SyncService.deviceStaleAfter;
     final age = now.difference(reading.dateTime);
     if (reading.timestamp <= _lastTimestamp ||
+        reading.timestamp < _management.lastReadingAt ||
         age > maxAge ||
         age < const Duration(minutes: -5)) {
       return;
@@ -172,6 +208,22 @@ class AppStore extends ChangeNotifier {
     temp = reading.temperature;
     doxy = reading.dissolvedOxygen;
     _checkReadings(reading.timestamp);
+    if (_managementSubscription != null) {
+      final initial = [for (final i in incidents) Incident.fromMap(i.toMap())];
+      _managementWrites = _managementWrites.then((_) async {
+        if (_disposed) return;
+        try {
+          await FirebaseService().recordManagementReading('pond1', reading,
+              initialIncidents: initial);
+          if (_disposed) return;
+          managementSyncFailed = false;
+        } catch (_) {
+          if (_disposed) return;
+          managementSyncFailed = true;
+        }
+        notifyListeners();
+      });
+    }
   }
 
   void _expireReading() {
@@ -185,6 +237,10 @@ class AppStore extends ChangeNotifier {
     _tick?.cancel();
     _scenario?.cancel();
     _readingExpiry?.cancel();
+    unawaited(_managementSubscription?.cancel());
+    unawaited(_mortalitySubscription?.cancel());
+    _managementSubscription = null;
+    _mortalitySubscription = null;
     final subscription = _liveReadings;
     _liveReadings = null;
     unawaited(subscription?.cancel().catchError((Object _) {}));
@@ -192,6 +248,9 @@ class AppStore extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    _managementSubscription?.cancel();
+    _mortalitySubscription?.cancel();
     _tick?.cancel();
     _scenario?.cancel();
     _readingExpiry?.cancel();
@@ -336,190 +395,85 @@ class AppStore extends ChangeNotifier {
   }
 
   void _checkReadings(int sampledAt) {
-    for (final p in const ['ph', 't', 'o']) {
-      if (level(p) == 'ok') {
-        _unresolvedParameters.remove(p);
-      } else if (!_unresolvedParameters.contains(p)) {
-        _openIncident(p, sampledAt);
+    final previous = {
+      for (final i in incidents) i.id: Incident.fromMap(i.toMap()),
+    };
+    _replaceIncidents(
+        _management.receive(currentReading, allowDemoTimeJump: simulation));
+    for (final incident in incidents) {
+      final before = previous[incident.id];
+      if (before == null) {
+        _note(AppNotificationType.alert, incident.title,
+            '${paramMeta[incident.p]!.label} ${incident.val} · Pond 1');
+      } else if (before.st != incident.st ||
+          before.safeSince != incident.safeSince) {
+        final title = incident.st == 'resolved'
+            ? L('Resolved · verified safe', 'Naresolba · na-verify na ligtas')
+            : incident.st == 'unresolved'
+                ? L('Not resolved', 'Hindi naresolba')
+                : incident.isVerifying
+                    ? L('Back in range · verifying',
+                        'Bumalik sa ligtas na saklaw · bine-verify')
+                    : L('Unsafe again · verification reset',
+                        'Hindi ligtas muli · na-reset ang pag-verify');
+        _note(
+            incident.st == 'unresolved'
+                ? AppNotificationType.alert
+                : AppNotificationType.history,
+            title,
+            incident.rem.lastOrNull?.note ?? incident.title);
       }
     }
-    _verify(sampledAt);
+    _save();
     notifyListeners();
   }
 
-  // ─── Incident machine ───────────────────────────────────────────
-  void _openIncident(String p, int sampledAt) {
-    if (incidents.any((i) => i.p == p && i.isOpen)) return;
-    final v = reading(p);
-    final lvl = level(p);
-    final title = paramTitle(p, v);
-    final w = windowText(paramMeta[p]!.window(lvl));
-    incidents.insert(
-      0,
-      Incident(
-        id: sampledAt + const ['o', 'ph', 't'].indexOf(p),
-        p: p,
-        d0: distance(p, v),
-        title: title,
-        val: formatReading(p, v),
-        ts: sampledAt,
-        lvl: lvl,
-        sms: simulation,
-      ),
-    );
-    _note(
-      AppNotificationType.alert,
-      title,
-      '${paramMeta[p]!.label} is ${formatReading(p, v)} in Pond 1. '
-      '${L('Act within', 'Kumilos sa loob ng')} $w.',
-    );
-    _save();
-  }
-
-  void _autoAction(Incident i, int sampledAt) {
-    final name = autoActionFor(i.p);
-    i.rem.add(IncidentRemark(
-      t: sampledAt,
-      action: name,
-      note: L('Detected from the sensor readings',
-          'Natukoy mula sa mga reading ng sensor'),
-    ));
-    i.act = true;
-    i.st = 'progress';
-    i.actAt = sampledAt;
-    _note(
-      AppNotificationType.history,
-      L('Action taken', 'Nagawa na ang aksyon'),
-      '$name — ${i.title} (${i.val}).',
-    );
+  void _replaceIncidents(ManagementLogs state) {
+    final existing = {for (final i in incidents) i.id: i};
+    final updated = <Incident>[];
+    for (final record in state.incidents) {
+      final previous = existing[record.id];
+      if (previous == null) {
+        updated.add(record);
+      } else {
+        previous.updateFrom(record);
+        updated.add(previous);
+      }
+    }
+    incidents
+      ..clear()
+      ..addAll(updated);
+    _management =
+        ManagementLogs(incidents: updated, lastReadingAt: state.lastReadingAt);
   }
 
   void _resetVerification() {
-    final active = openIncidents.where((i) => i.isVerifying).toList();
-    if (active.isEmpty) return;
-    for (final i in active) {
-      i.safeSince = null;
-    }
-    _save();
-  }
-
-  void _verify(int sampledAt) {
     var changed = false;
-    for (final i in incidents) {
-      if (!i.isOpen) continue;
-      final p = i.p;
-      final lv = level(p);
-
-      if (lv == 'crit' && i.lvl == 'warn') {
-        i.lvl = 'crit';
-        changed = true;
-      }
-
-      if (!i.act) {
-        i.d0 ??= distance(p, reading(p));
-        final delta = improvementDelta[p]!;
-        if (distance(p, reading(p)) <= i.d0! - delta) {
-          i.imp += 1;
-          if (i.imp >= 2) {
-            _autoAction(i, sampledAt);
-            changed = true;
-          }
-        } else {
-          i.imp = 0;
-        }
-      }
-
-      if (lv == 'ok') {
-        final since = i.safeSince;
-        if (since == null) {
-          i.safeSince = sampledAt;
-          changed = true;
-          _note(
-            AppNotificationType.history,
-            L('Back in range · verifying',
-                'Bumalik sa ligtas na saklaw · bine-verify'),
-            L('The reading must stay in range for 10 minutes.',
-                'Kailangang manatiling ligtas ang reading sa loob ng 10 minuto.'),
-          );
-        } else if (sampledAt - since >= verificationPeriod.inMilliseconds) {
-          i.st = 'resolved';
-          i.closedAt = sampledAt;
-          i.after = formatReading(p, reading(p));
-          i.self = !i.act;
-          changed = true;
-          final msg = '${i.val} → ${i.after}. ${L(
-            'Verified after 10 minutes of safe readings.',
-            'Na-verify matapos ang 10 minutong ligtas na readings.',
-          )}';
-          i.rem.add(IncidentRemark(t: sampledAt, note: msg));
-          _note(
-            AppNotificationType.history,
-            L('Resolved · verified safe', 'Naresolba · na-verify na ligtas'),
-            msg,
-          );
-        }
-      } else {
-        if (i.isVerifying) {
-          i.safeSince = null;
-          changed = true;
-          _note(
-            AppNotificationType.alert,
-            L('Unsafe again · verification reset',
-                'Hindi ligtas muli · na-reset ang pag-verify'),
-            paramMeta[p]!.label,
-          );
-        }
-        final latest = paramMeta[p]!.window(i.lvl)[1] * 60000;
-        if (sampledAt > i.ts + latest) {
-          i.st = 'unresolved';
-          _unresolvedParameters.add(p);
-          i.closedAt = sampledAt;
-          changed = true;
-          final msg =
-              '${paramMeta[p]!.label} ${L('is still', 'ay nananatiling')} '
-              '${formatReading(p, reading(p))} ${L('after the response window', 'matapos ang itinakdang oras')}.';
-          i.rem.add(IncidentRemark(
-              t: sampledAt,
-              note: '${L('Not resolved', 'Hindi naresolba')}: $msg'));
-          _note(AppNotificationType.alert, L('Not resolved', 'Hindi naresolba'),
-              msg);
-        }
-      }
+    for (final i in incidents.where((i) => i.isVerifying)) {
+      i.safeSince = null;
+      changed = true;
     }
     if (changed) _save();
   }
 
-  // ─── Owner actions ──────────────────────────────────────────────
-  void logMortality(int n) {
-    final sc = _suspectedCause();
-    mortality.insert(
-        0,
-        MortLog(
-            n: n,
-            cause: sc,
-            t: DateTime.now().millisecondsSinceEpoch,
-            snap:
-                'DO ${doxy.toStringAsFixed(2)} mg/L · pH ${ph.toStringAsFixed(2)} · ${temp.toStringAsFixed(1)} °C'));
-    _note(AppNotificationType.alert, L('Fish died', 'Namatay na isda'),
-        '$n ${L('fish died', 'isda ang namatay')}. ${L('Suspected cause', 'Posibleng sanhi')}: $sc.');
+  /// Management and reports consume the same saved mortality records.
+  void replaceMortalityRecords(String pondId, List<MortalityRecord> records) {
+    if (pondId != 'pond1') return;
+    mortality
+      ..clear()
+      ..addAll(records.map((record) => MortLog(
+            n: record.count,
+            cause: record.analysis?.findings
+                    .map((f) => f.factor.english)
+                    .join(' · ') ??
+                record.possibleCause,
+            t: record.eventAt?.millisecondsSinceEpoch ?? record.timestamp,
+          )));
     _save();
     notifyListeners();
   }
 
-  String _suspectedCause() {
-    final out = <String>[];
-    for (final p in const ['o', 't', 'ph']) {
-      if (level(p) != 'ok') {
-        out.add(
-            '${paramTitle(p, reading(p))} (${levelName(level(p))} · ${formatReading(p, reading(p))})');
-      }
-    }
-    return out.isEmpty
-        ? L('No abnormal water reading — possible disease or infection',
-            'Normal ang tubig — posibleng sakit o impeksiyon')
-        : out.join(' + ');
-  }
-
+  // ─── Owner actions ──────────────────────────────────────────────
   void addHarvest(HarvestRecord h) {
     harvest.insert(0, h);
     _note(
@@ -581,6 +535,7 @@ class AppStore extends ChangeNotifier {
       final data = {
         'lang': appLang,
         'inc': incidents.map((i) => i.toMap()).toList(),
+        'management_last_reading_at': _management.lastReadingAt,
         'harv': harvest.map((h) => h.toMap()).toList(),
         'mort': mortality.map((m) => m.toMap()).toList(),
         'notes': notes.map((n) => n.toMap()).toList(),
@@ -618,6 +573,10 @@ class AppStore extends ChangeNotifier {
       for (final incident in openIncidents) {
         incident.safeSince = null;
       }
+      _management = ManagementLogs(
+          incidents: incidents,
+          lastReadingAt:
+              (m['management_last_reading_at'] as num?)?.toInt() ?? 0);
       mortality
         ..clear()
         ..addAll(

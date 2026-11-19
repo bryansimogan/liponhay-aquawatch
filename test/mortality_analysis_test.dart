@@ -70,7 +70,9 @@ void main() {
     ]);
     final withinRange = evaluate([sample(Duration.zero)]);
 
-    expect(distant.reading, isNull);
+    expect(distant.reading!.ph, 12);
+    expect(distant.readingOutdated, isTrue);
+    expect(distant.findings, isEmpty);
     expect(distant.insufficient, isTrue);
     expect(after.readingAfterEvent, isTrue);
     expect(after.insufficient, isTrue);

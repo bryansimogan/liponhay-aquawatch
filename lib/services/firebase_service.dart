@@ -4,12 +4,14 @@ import '../models/mortality_record.dart';
 import '../models/mortality_analysis.dart';
 import '../models/alert_record.dart';
 import '../models/gsm_config.dart';
+import '../models/incident.dart';
+import '../models/management_logs.dart';
 import 'offline_cache_service.dart';
 import 'sync_service.dart';
 
 /// Service layer for all Firebase Realtime Database operations.
 class FirebaseService {
-  final DatabaseReference _db = FirebaseDatabase.instance.ref();
+  DatabaseReference get _db => FirebaseDatabase.instance.ref();
 
   // ---- SENSOR DATA ----
 
@@ -19,7 +21,7 @@ class FirebaseService {
         _db.child('ponds').child(pondId).child('current').onValue.map((event) {
       final data = event.snapshot.value;
       if (data == null) return null;
-      return SensorData.fromMap(Map<String, dynamic>.from(data as Map));
+      return data is Map ? SensorData.tryFromHistoryMap(data) : null;
     });
     await for (final reading in remote) {
       if (reading != null) {
@@ -145,6 +147,52 @@ class FirebaseService {
         .toList();
   }
 
+  /// Capture the current device row as well as the event's saved history.
+  /// Parse raw rows so missing sensor channels never acquire default values.
+  Future<List<MortalityReading>> getMortalityReadings(String pondId,
+      {required DateTime eventAt}) async {
+    final history = await getMortalityHistory(pondId,
+        since: eventAt.subtract(MortalityAnalysis.maxGap), until: eventAt);
+    MortalityReading? current;
+    if (SyncService.instance.phoneOnline.value) {
+      try {
+        final snapshot = await _db
+            .child('ponds/$pondId/current')
+            .get()
+            .timeout(const Duration(seconds: 6));
+        if (snapshot.value case final Map row) {
+          current = MortalityReading.fromMap(row);
+        }
+      } catch (_) {
+        // A cached sample retains its original device timestamp.
+      }
+    }
+    if (current == null) {
+      final cached = await OfflineCacheService.current(pondId);
+      if (cached != null) current = MortalityReading.fromSensor(cached);
+    }
+    return [...history, if (current != null) current];
+  }
+
+  Stream<ManagementLogs> managementLogsStream(String pondId) => _db
+      .child('ponds/$pondId/management_logs')
+      .onValue
+      .map((event) => ManagementLogs.fromMap(event.snapshot.value is Map
+          ? event.snapshot.value as Map
+          : const {}));
+
+  /// The transaction also deduplicates a reading processed by two phones.
+  Future<void> recordManagementReading(String pondId, SensorData reading,
+      {required List<Incident> initialIncidents}) async {
+    await _db.child('ponds/$pondId/management_logs').runTransaction((value) {
+      final state = value is Map
+          ? ManagementLogs.fromMap(value)
+          : ManagementLogs(incidents: initialIncidents);
+      if (reading.timestamp <= state.lastReadingAt) return Transaction.abort();
+      return Transaction.success(state.receive(reading).toMap());
+    }, applyLocally: false);
+  }
+
   String newMortalityId(String pondId) =>
       _db.child('ponds').child(pondId).child('mortality').push().key!;
 
@@ -165,28 +213,29 @@ class FirebaseService {
     required String pondId,
     required String recordId,
     required int count,
+    String? notes,
   }) async {
     await _db
         .child('ponds')
         .child(pondId)
         .child('mortality')
         .child(recordId)
-        .update({'count': count});
+        .update({'count': count, if (notes != null) 'notes': notes});
   }
 
-  /// Re-files a record under a different pond: writes it to the new pond,
-  /// then removes the original entry.
+  /// Re-files a record under a different pond in one atomic update.
   Future<void> moveMortalityRecord(
     MortalityRecord record, {
     required String fromPondId,
   }) async {
-    await _db
-        .child('ponds')
-        .child(record.pondId)
-        .child('mortality')
-        .child(record.id)
-        .set(record.toMap());
-    await deleteMortalityRecord(pondId: fromPondId, recordId: record.id);
+    if (fromPondId == record.pondId) {
+      await addMortalityRecord(record);
+      return;
+    }
+    await _db.update({
+      'ponds/${record.pondId}/mortality/${record.id}': record.toMap(),
+      'ponds/$fromPondId/mortality/${record.id}': null,
+    });
   }
 
   /// Removes a mortality record.

@@ -160,9 +160,14 @@ class MortalityAnalysis {
       reading != null &&
       eventTimestamp != null &&
       reading!.timestamp > eventTimestamp!;
+  bool get readingOutdated =>
+      reading != null &&
+      eventTimestamp != null &&
+      eventTimestamp! - reading!.timestamp > maxGap.inMilliseconds;
   bool get insufficient =>
       reading == null ||
       readingAfterEvent ||
+      readingOutdated ||
       !hasSpeciesProfile ||
       (findings.isEmpty && !reading!.hasMonitoredParameters);
 
@@ -176,8 +181,14 @@ class MortalityAnalysis {
     final candidates = <int, MortalityReading>{};
     MortalityReading? before;
     MortalityReading? after;
+    MortalityReading? latestBefore;
     for (final sample in readings) {
       final offset = sample.timestamp - event;
+      if (offset <= 0 &&
+          (latestBefore == null ||
+              sample.timestamp >= latestBefore.timestamp)) {
+        latestBefore = sample;
+      }
       if (offset.abs() > radius) continue;
       candidates[sample.timestamp] = sample;
       if (offset <= 0) {
@@ -198,7 +209,7 @@ class MortalityAnalysis {
       lastReading: timestamps.lastOrNull,
       findings: findings,
       eventTimestamp: event,
-      reading: before ?? after,
+      reading: before ?? latestBefore ?? after,
       hasSpeciesProfile: hasSpeciesProfile,
     );
   }

@@ -99,6 +99,13 @@ class Incident {
   /// Reading value once resolved.
   String? after;
 
+  double? latestValue;
+  int? latestAt;
+  double? lastUnsafeValue;
+
+  double get problemValue =>
+      lastUnsafeValue ?? double.tryParse(val.split(' ').first) ?? 0;
+
   Incident({
     required this.id,
     required this.p,
@@ -117,10 +124,33 @@ class Incident {
     this.safeSince,
     this.self = false,
     this.after,
+    this.latestValue,
+    this.latestAt,
+    this.lastUnsafeValue,
   }) : rem = rem ?? [];
 
   bool get isOpen => st == 'open' || st == 'progress';
   bool get isVerifying => isOpen && safeSince != null;
+
+  void updateFrom(Incident latest) {
+    title = latest.title;
+    val = latest.val;
+    lvl = latest.lvl;
+    st = latest.st;
+    sms = latest.sms;
+    act = latest.act;
+    actAt = latest.actAt;
+    rem = latest.rem;
+    closedAt = latest.closedAt;
+    d0 = latest.d0;
+    imp = latest.imp;
+    safeSince = latest.safeSince;
+    self = latest.self;
+    after = latest.after;
+    latestValue = latest.latestValue;
+    latestAt = latest.latestAt;
+    lastUnsafeValue = latest.lastUnsafeValue;
+  }
 
   Map<String, dynamic> toMap() => {
         'id': id,
@@ -140,6 +170,9 @@ class Incident {
         'safeSince': safeSince,
         'self': self,
         'after': after,
+        'latest_value': latestValue,
+        'latest_at': latestAt,
+        'last_unsafe_value': lastUnsafeValue,
       };
 
   factory Incident.fromMap(Map<dynamic, dynamic> m) => Incident(
@@ -162,6 +195,9 @@ class Incident {
         safeSince: (m['safeSince'] as num?)?.toInt(),
         self: m['self'] as bool? ?? false,
         after: m['after'] as String?,
+        latestValue: (m['latest_value'] as num?)?.toDouble(),
+        latestAt: (m['latest_at'] as num?)?.toInt(),
+        lastUnsafeValue: (m['last_unsafe_value'] as num?)?.toDouble(),
       );
 }
 

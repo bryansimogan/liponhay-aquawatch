@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../app_theme.dart';
 import '../data/response_content.dart';
 import '../models/incident.dart';
+import '../models/notification_copy.dart';
 import '../services/app_store.dart';
 import '../services/i18n.dart';
 import '../utils/fmt.dart';
@@ -59,6 +60,14 @@ class _ManageScreenState extends State<ManageScreen> {
               children: [
                 _headerRow(open.length, s),
                 const SizedBox(height: 12),
+                if (s.managementSyncFailed)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Text(L(
+                      'Management logs could not sync to Firebase. Check the connection and database access.',
+                      'Hindi ma-sync sa Firebase ang management logs. Suriin ang koneksyon at access sa database.',
+                    )),
+                  ),
                 if (s.hasCurrentReading)
                   Reveal(child: _safeStrip(s))
                 else
@@ -288,9 +297,7 @@ class _ManageScreenState extends State<ManageScreen> {
     );
   }
 
-  double _val(Incident i) =>
-      double.tryParse(i.val.split(' ').first) ??
-      context.read<AppStore>().reading(i.p);
+  double _val(Incident i) => i.problemValue;
 
   Widget _incidentGrid(AppStore store, List<Incident> open) {
     final ordered = [
@@ -665,12 +672,12 @@ class _ManageScreenState extends State<ManageScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(i.title,
+                  Text(paramTitle(i.p, i.problemValue),
                       style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w700,
                           color: AppTheme.of(context).ink)),
-                  Text('${i.val} · ${fd(i.ts)}',
+                  Text('${formatReading(i.p, i.problemValue)} · ${fd(i.ts)}',
                       style: TextStyle(
                           fontSize: 12, color: AppTheme.of(context).inkSoft)),
                 ],
@@ -719,17 +726,37 @@ class _ManageScreenState extends State<ManageScreen> {
 
 /// Live-updating incident detail: countdown, step tracker, risk breakdown,
 /// feeding advice, timeline and the final verdict.
-class _IncidentDetailSheet extends StatelessWidget {
+class _IncidentDetailSheet extends StatefulWidget {
   final int incidentId;
   const _IncidentDetailSheet({required this.incidentId});
 
   @override
+  State<_IncidentDetailSheet> createState() => _IncidentDetailSheetState();
+}
+
+class _IncidentDetailSheetState extends State<_IncidentDetailSheet> {
+  Timer? _clock;
+
+  @override
+  void initState() {
+    super.initState();
+    _clock = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _clock?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final s = context.watch<AppStore>();
-    final i = s.incidents
-        .firstWhere((x) => x.id == incidentId, orElse: () => s.incidents.first);
-    final rk =
-        riskKey(i.p, double.tryParse(i.val.split(' ').first) ?? s.reading(i.p));
+    final i = s.incidents.where((x) => x.id == widget.incidentId).firstOrNull;
+    if (i == null) return const SizedBox.shrink();
+    final rk = riskKey(i.p, i.problemValue);
     final open = i.isOpen;
     final crit = i.lvl == 'crit';
     final accent =
@@ -768,7 +795,8 @@ class _IncidentDetailSheet extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('${i.title} · ${i.val}',
+                    Text(
+                        '${paramTitle(i.p, i.problemValue)} · ${formatReading(i.p, i.problemValue)}',
                         style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w700,
@@ -782,6 +810,12 @@ class _IncidentDetailSheet extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 16),
+          if (i.latestValue != null && i.latestAt != null)
+            Text(
+                '${L('Latest recorded reading', 'Pinakabagong naitalang reading')} · '
+                '${formatReading(i.p, i.latestValue!)} · ${fd(i.latestAt!)}',
+                style: TextStyle(
+                    fontSize: 12, color: AppTheme.of(context).inkSoft)),
           if (open) _incidentCountdown(context, s, i),
           const SizedBox(height: 16),
           _steps(context, i, s.simulation),
@@ -1087,10 +1121,10 @@ class _IncidentDetailSheet extends StatelessWidget {
 
   Widget _remarkRow(BuildContext context, IncidentRemark r) {
     final text = r.action != null
-        ? '${L('Action', 'Aksyon')}: ${r.action}${r.note.isNotEmpty ? ' — ${r.note}' : ''}'
+        ? '${L('Action', 'Aksyon')}: ${localizeSystemMessage(r.action!)}${r.note.isNotEmpty ? ' — ${localizeSystemMessage(r.note)}' : ''}'
         : r.died != null
             ? '${L('Fish died', 'Namatay na isda')}: ${r.died}'
-            : r.note;
+            : localizeSystemMessage(r.note);
     return Padding(
       padding: const EdgeInsets.only(bottom: 10, left: 4),
       child: Column(

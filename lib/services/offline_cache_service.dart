@@ -32,7 +32,8 @@ class OfflineCacheService {
       final raw = (await SharedPreferences.getInstance())
           .getString(_currentKey(pondId));
       if (raw == null) return null;
-      return SensorData.fromMap(jsonDecode(raw) as Map<String, dynamic>);
+      return SensorData.tryFromHistoryMap(
+          jsonDecode(raw) as Map<String, dynamic>);
     } catch (_) {
       return null;
     }
