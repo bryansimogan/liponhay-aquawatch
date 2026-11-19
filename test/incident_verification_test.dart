@@ -8,6 +8,24 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
+  test('the live snapshot retains measured ammonia for mortality analysis',
+      () async {
+    final now = DateTime(2026, 11, 19, 9);
+    final readings = StreamController<SensorData?>(sync: true);
+    addTearDown(readings.close);
+    final store = AppStore(simulation: false, clock: () => now);
+    addTearDown(store.dispose);
+    await store.init();
+    store.connectLive(readings: readings.stream);
+    readings.add(SensorData(
+        ph: 7,
+        temperature: 28,
+        dissolvedOxygen: 6,
+        ammoniaNh3: .12,
+        timestamp: now.millisecondsSinceEpoch));
+    expect(store.currentReading.ammoniaNh3, .12);
+  });
+
   test('demo recovery restarts after a relapse and resolves at ten minutes',
       () async {
     final store = AppStore(

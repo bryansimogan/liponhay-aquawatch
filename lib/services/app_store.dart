@@ -69,6 +69,7 @@ class AppStore extends ChangeNotifier {
   double ph = 7.99;
   double temp = 29.8;
   double doxy = 6.4;
+  double? _ammoniaNh3;
   int _demoLastReading = 0;
   final _demoReadings = ListQueue<SensorData>();
   Iterable<SensorData> get demoReadings => _demoReadings;
@@ -100,6 +101,7 @@ class AppStore extends ChangeNotifier {
         ph: ph,
         temperature: temp,
         dissolvedOxygen: doxy,
+        ammoniaNh3: simulation ? null : _ammoniaNh3,
         timestamp: simulation ? _demoLastReading : _lastTimestamp,
       );
 
@@ -211,6 +213,7 @@ class AppStore extends ChangeNotifier {
     ph = reading.ph;
     temp = reading.temperature;
     doxy = reading.dissolvedOxygen;
+    _ammoniaNh3 = reading.ammoniaNh3;
     _checkReadings(reading.timestamp);
     if (_managementSubscription != null) {
       final initial = [for (final i in incidents) Incident.fromMap(i.toMap())];
