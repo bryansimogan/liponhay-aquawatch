@@ -215,12 +215,21 @@ class FirebaseService {
     required int count,
     String? notes,
   }) async {
-    await _db
-        .child('ponds')
-        .child(pondId)
-        .child('mortality')
-        .child(recordId)
-        .update({'count': count, if (notes != null) 'notes': notes});
+    final reference =
+        _db.child('ponds').child(pondId).child('mortality').child(recordId);
+    final saved = await reference.get();
+    if (!saved.exists) throw StateError('The mortality record was deleted.');
+    final result = await reference.runTransaction((value) {
+      if (value is! Map) return Transaction.abort();
+      return Transaction.success({
+        ...Map<String, dynamic>.from(value),
+        'count': count,
+        if (notes != null) 'notes': notes,
+      });
+    }, applyLocally: false);
+    if (!result.committed) {
+      throw StateError('The mortality record was deleted during the edit.');
+    }
   }
 
   /// Re-files a record under a different pond in one atomic update.
