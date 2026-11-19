@@ -263,16 +263,30 @@ class HarvestRecord {
 /// Stocking record for the pond — how many fingerlings, pond area, date.
 class Stocking {
   final int n;
-  final int area;
+  final num area;
   final String date;
 
   const Stocking({this.n = 1000, this.area = 250, this.date = ''});
 
   Map<String, dynamic> toMap() => {'n': n, 'area': area, 'date': date};
 
+  bool get isValid =>
+      n >= 0 && area.isFinite && area > 0 && DateTime.tryParse(date) != null;
+
+  static Stocking? tryFromMap(Map<dynamic, dynamic> map) {
+    final count = map['n'];
+    if (count is! num ||
+        !count.isFinite ||
+        count % 1 != 0 ||
+        map['area'] is! num ||
+        map['date'] is! String) return null;
+    final value = Stocking.fromMap(map);
+    return value.isValid ? value : null;
+  }
+
   factory Stocking.fromMap(Map<dynamic, dynamic> m) => Stocking(
         n: (m['n'] as num?)?.toInt() ?? 1000,
-        area: (m['area'] as num?)?.toInt() ?? 250,
+        area: (m['area'] as num?) ?? 250,
         date: (m['date'] as String?) ?? '',
       );
 }

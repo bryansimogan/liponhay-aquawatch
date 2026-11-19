@@ -199,6 +199,24 @@ class FirebaseService {
   String newMortalityId(String pondId) =>
       _db.child('ponds').child(pondId).child('mortality').push().key!;
 
+  Stream<Stocking?> stockingStream(String pondId) => _db
+      .child('ponds/$pondId/stocking')
+      .onValue
+      .map((event) => event.snapshot.value is Map
+          ? Stocking.tryFromMap(event.snapshot.value as Map)
+          : null);
+
+  Future<void> saveStocking(String pondId, Stocking value) async {
+    if (!value.isValid) throw ArgumentError('Invalid stocking information.');
+    final result = await _db.child('ponds/$pondId/stocking').runTransaction(
+        (current) => Transaction.success({
+              if (current is Map) ...Map<String, dynamic>.from(current),
+              ...value.toMap(),
+            }),
+        applyLocally: false);
+    if (!result.committed) throw StateError('Stocking was not saved.');
+  }
+
   // ---- FISH MORTALITY ----
 
   /// Add a mortality record.

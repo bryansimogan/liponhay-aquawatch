@@ -825,108 +825,196 @@ class _MortalityScreenState extends State<MortalityScreen> {
       .format(DateTime.fromMillisecondsSinceEpoch(value));
 
   Widget _sectionHeading(String title) => Padding(
-        padding: const EdgeInsets.only(top: 10, bottom: 8),
-        child: Text(title, style: Theme.of(context).textTheme.titleMedium),
+        padding: const EdgeInsets.fromLTRB(4, 22, 4, 12),
+        child: Text(title,
+            style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                letterSpacing: .7,
+                color: AppTheme.of(context).inkSoft)),
       );
 
-  Widget _analysisDetails(MortalityAnalysis? analysis) {
+  Widget _analysisCard(List<Widget> children) => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: AppTheme.of(context)
+            .card(borderColor: AppTheme.of(context).border, radius: 22),
+        child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start, children: children),
+      );
+
+  Widget _checkLine(String text, {bool warning = false}) => Padding(
+        padding: const EdgeInsets.only(bottom: 13),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Icon(
+                  warning ? Icons.info_outline_rounded : Icons.check_rounded,
+                  size: 19,
+                  color: warning
+                      ? AppTheme.of(context).amber
+                      : AppTheme.of(context).aqua)),
+          const SizedBox(width: 12),
+          Expanded(
+              child: Text(text,
+                  style: TextStyle(
+                      fontSize: 14,
+                      height: 1.55,
+                      color: AppTheme.of(context).ink))),
+        ]),
+      );
+
+  Widget _analysisDetails(MortalityAnalysis? analysis, MortalityRecord record) {
     final reading = analysis?.reading;
+    final findings = analysis?.findings ?? const <MortalityFinding>[];
     final missing = L('Not recorded', 'Walang naitalang reading');
     String measured(double? value, MortalityFactor factor) =>
         value == null ? missing : factor.format(value);
-    final findings = analysis?.findings ?? const <MortalityFinding>[];
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _sectionHeading(L('Water Quality Readings', 'Mga Reading ng Tubig')),
+    final valid = analysis != null && !analysis.insufficient;
+    final summary = !valid || findings.isEmpty
+        ? _suspectedCause(analysis)
+        : findings.map((finding) {
+            final severity = finding.criticalCount > 0
+                ? L('Critical', 'Kritikal')
+                : L('Warning', 'Babala');
+            return '${L(finding.factor.english, finding.factor.tagalog)} '
+                '($severity · ${finding.factor.format(finding.extreme)})';
+          }).join(' + ');
+    final checklist = <Widget>[];
+    if (analysis == null) {
+      checklist.add(_checkLine(
+          L('The original record has a date only. A reading cannot be matched to an exact event time.',
+              'Petsa lang ang nasa orihinal na tala. Kailangan ang oras para maitugma ang reading.'),
+          warning: true));
+    } else if (reading == null) {
+      checklist.add(_checkLine(
+          L('No usable reading was found within 30 minutes of the recorded event.',
+              'Walang magagamit na reading sa loob ng 30 minuto mula sa nakatalang oras.'),
+          warning: true));
+    } else if (analysis.readingAfterEvent) {
+      checklist.add(_checkLine(
+          L('The available reading was taken after the event. A reading from the time of the event or shortly before is needed to suggest a cause.',
+              'Pagkatapos ng insidente nakuha ang reading. Kailangan ang reading noong insidente o ilang minuto bago ito para makapagmungkahi ng sanhi.'),
+          warning: true));
+    } else if (analysis.readingOutdated) {
+      checklist.add(_checkLine(
+          L('The latest available reading is more than 30 minutes older than this report. It is preserved here, but a fresh reading is needed to estimate a suspected cause.',
+              'Mahigit 30 minuto nang luma ang pinakabagong reading kumpara sa ulat. Naka-save ito rito, pero kailangan ng sariwang reading para matantiya ang posibleng sanhi.'),
+          warning: true));
+    } else if (!analysis.hasSpeciesProfile) {
+      checklist.add(_checkLine(
+          L('A water quality profile for this species is needed to assess these readings.',
+              'Kailangan ang mga limitasyon sa kalidad ng tubig para sa species na ito upang masuri ang readings.'),
+          warning: true));
+    } else {
+      checklist.add(_checkLine(record.analysis?.usesEventMatch == true
+          ? L('When this mortality was logged, the app saved the available sensor readings with the record. These saved values are shown in “Readings when logged” above.',
+              'Nang itala ang namatay na isda, na-save kasama ng tala ang mga available na sensor reading. Nasa “Mga reading noong itinala” sa itaas ang mga na-save na halaga.')
+          : L('The closest recorded reading at or before this event was matched to its original date and time.',
+              'Itinugma sa orihinal na petsa at oras ng insidente ang pinakamalapit na naitalang reading noong insidente o bago ito.')));
+      checklist.add(_checkLine(L(
+          'It compares the readings with the tilapia monitoring ranges. pH 6.5–8.5, temperature 25–32 °C, and dissolved oxygen 5.0 mg/L and above.',
+          'Inihahambing ang readings sa saklaw para sa tilapia. pH 6.5–8.5, temperatura 25–32 °C, at dissolved oxygen na 5.0 mg/L pataas.')));
+      if (!reading.hasMonitoredParameters) {
+        checklist.add(_checkLine(
+            L('This snapshot is incomplete. Only the measured parameters can be assessed.',
+                'Kulang ang snapshot na ito. Ang mga parameter lang na nasukat ang maaaring suriin.'),
+            warning: true));
+      }
+      for (final finding in findings) {
+        checklist.add(_checkLine('${_findingExplanation(finding, reading)} '
+            '${_healthEffect(finding.factor)}'));
+      }
+      if (findings.length > 1) {
+        checklist.add(_checkLine(L(
+            'Critical problems are listed first, followed by warnings. Multiple abnormal readings are shown together as possible contributing causes.',
+            'Nauuna ang mga kritikal na problema, kasunod ang mga babala. Sama-samang ipinapakita ang mga abnormal na reading bilang mga posibleng salik.')));
+      }
+      if (findings.isEmpty && reading.hasMonitoredParameters) {
+        checklist.add(_checkLine(L(
+            'The recorded parameters were within their monitoring limits. Disease, infection, handling stress, or other factors require a separate investigation.',
+            'Nasa saklaw ang mga naitalang parameter. Kailangan ng hiwalay na pagsusuri para sa sakit, impeksiyon, stress sa paghawak, o iba pang salik.')));
+      }
+    }
+    checklist.add(_checkLine(
+        L('These findings are suspected causes based on the recorded evidence. If deaths continue, ask a fisheries technician to examine the fish and water.',
+            'Mga pinaghihinalaang sanhi ang mga ito batay sa naitalang ebidensya. Kung patuloy ang pagkamatay, ipasuri ang isda at tubig sa fisheries technician.'),
+        warning: true));
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _analysisCard([
+        Text(L('Suspected cause', 'Pinaghihinalaang sanhi'),
+            style:
+                TextStyle(fontSize: 13, color: AppTheme.of(context).inkSoft)),
+        const SizedBox(height: 7),
+        Text(summary,
+            style: TextStyle(
+                fontSize: 16,
+                height: 1.4,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.of(context).ink)),
+        const SizedBox(height: 12),
+        Text(
+            reading == null
+                ? L('Readings unavailable', 'Walang available na reading')
+                : '${L('Readings when logged', 'Mga reading noong itinala')} · '
+                    'DO ${measured(reading.dissolvedOxygen, MortalityFactor.lowOxygen)} · '
+                    'pH ${measured(reading.ph, MortalityFactor.lowPh)} · '
+                    '${measured(reading.temperature, MortalityFactor.lowTemperature)}'
+                    '${reading.ammoniaNh3 == null ? '' : ' · NH₃ ${MortalityFactor.highAmmonia.format(reading.ammoniaNh3!)}'}',
+            style: TextStyle(
+                fontSize: 13,
+                height: 1.55,
+                color: AppTheme.of(context).inkSoft)),
         if (reading != null) ...[
-          _detailRow(L('Recorded at', 'Oras ng reading'),
-              _dateTime(reading.timestamp)),
-          _detailRow(L('Dissolved oxygen', 'Dissolved oxygen'),
-              measured(reading.dissolvedOxygen, MortalityFactor.lowOxygen)),
-          _detailRow('pH', measured(reading.ph, MortalityFactor.lowPh)),
-          _detailRow(L('Temperature', 'Temperatura'),
-              measured(reading.temperature, MortalityFactor.lowTemperature)),
-          _detailRow(L('Ammonia (NH₃)', 'Ammonia (NH₃)'),
-              measured(reading.ammoniaNh3, MortalityFactor.highAmmonia)),
-        ] else
-          Text(missing),
-        const SizedBox(height: 8),
-        _detailRow(L('Suspected Cause', 'Pinaghihinalaang sanhi'),
-            _suspectedCause(analysis)),
-        _sectionHeading(
-            L('HOW WAS THIS CAUSE FOUND?', 'PAANO NATUKOY ANG SANHI?')),
-        if (analysis == null)
-          Text(L(
-              'The original record has a date only. A reading cannot be matched to an exact event time.',
-              'Petsa lang ang nasa orihinal na tala. Kailangan ang oras para maitugma ang reading.'))
-        else if (reading == null)
-          Text(L(
-              'No usable reading was found within 30 minutes of the recorded event.',
-              'Walang magagamit na reading sa loob ng 30 minuto mula sa nakatalang oras.'))
-        else if (analysis.readingAfterEvent)
-          Text(L(
-              'The available reading was taken after the event. A reading from the time of the event or shortly before is needed to suggest a cause.',
-              'Pagkatapos ng insidente nakuha ang reading. Kailangan ang reading noong insidente o ilang minuto bago ito para makapagmungkahi ng sanhi.'))
-        else if (analysis.readingOutdated)
-          Text(L(
-              'The latest available reading is more than 30 minutes older than this report. It is preserved here, but a fresh reading is needed to estimate a suspected cause.',
-              'Mahigit 30 minuto nang luma ang pinakabagong reading kumpara sa ulat. Naka-save ito rito, pero kailangan ng sariwang reading para matantiya ang posibleng sanhi.'))
-        else if (!analysis.hasSpeciesProfile)
-          Text(L(
-              'A water quality profile for this species is needed to assess these readings.',
-              'Kailangan ang mga limitasyon sa kalidad ng tubig para sa species na ito upang masuri ang readings.'))
-        else ...[
-          Text(L(
-              'The closest recorded reading at or before the event was compared with the tilapia monitoring limits.',
-              'Inihambing ang pinakamalapit na reading noong insidente o bago ito sa mga limitasyon para sa tilapia.')),
-          if (!reading.hasMonitoredParameters)
-            Padding(
-              padding: const EdgeInsets.only(top: 7),
-              child: Text(L(
-                  'This snapshot is incomplete. Only the measured parameters can be assessed.',
-                  'Kulang ang snapshot na ito. Ang mga parameter lang na nasukat ang maaaring suriin.')),
-            ),
-          if (findings.isEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 7),
-              child: Text(analysis.insufficient
-                  ? L('Some monitored parameters are missing from this reading.',
-                      'Kulang ang isa o higit pang sinusubaybayang parameter sa reading.')
-                  : L('The recorded parameters were within their monitoring limits. Disease, infection, handling stress, or other factors require a separate investigation.',
-                      'Nasa saklaw ang mga naitalang parameter. Kailangan ng hiwalay na pagsusuri para sa sakit, impeksiyon, stress sa paghawak, o iba pang salik.')),
-            ),
-          for (final finding in findings)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Text(
-                  '${_findingExplanation(finding, reading)} ${_healthEffect(finding.factor)}'),
-            ),
-          if (findings.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 7),
-              child: Text(L(
-                  'These findings are possible contributors. Confirmation requires further investigation.',
-                  'Mga posibleng salik ang mga ito. Kailangan pa ng masusing pagsusuri para makumpirma.')),
-            ),
+          const SizedBox(height: 5),
+          Text(
+              '${L('Recorded at', 'Oras ng reading')} · ${_dateTime(reading.timestamp)}',
+              style:
+                  TextStyle(fontSize: 11, color: AppTheme.of(context).inkSoft)),
         ],
-        _sectionHeading(
-            L('HOW TO LESSEN IT NEXT TIME?', 'PAANO MABABAWASAN SA SUSUNOD?')),
-        if (findings.isEmpty)
-          Text(L(
-            'If losses continue, record the time and fish behavior, take a fresh water sample, and consult a fisheries technician.',
-            'Kung patuloy ang pagkamatay ng isda, itala ang oras at kilos ng isda, kumuha ng bagong sample ng tubig, at kumonsulta sa fisheries technician.',
-          ))
-        else
-          for (final finding in findings)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: Text(
-                '${L(finding.factor.english, finding.factor.tagalog)} · ${_prevention(finding.factor)}',
-              ),
-            ),
-      ],
-    );
+      ]),
+      _sectionHeading(
+          L('HOW WAS THIS CAUSE FOUND?', 'PAANO NATUKOY ANG SANHI?')),
+      _analysisCard(checklist),
+      _sectionHeading(
+          L('HOW TO LESSEN IT NEXT TIME', 'PAANO MABABAWASAN SA SUSUNOD')),
+      if (findings.isEmpty)
+        _analysisCard([
+          Text(L('Further checks', 'Karagdagang pagsusuri'),
+              style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.of(context).ink)),
+          const SizedBox(height: 12),
+          _checkLine(L(
+              'Record the time of losses and any unusual fish behavior.',
+              'Itala ang oras ng pagkamatay at anumang kakaibang kilos ng isda.')),
+          _checkLine(L(
+              'Take a fresh water sample and verify the sensor readings.',
+              'Kumuha ng sariwang sample ng tubig at kumpirmahin ang sensor readings.')),
+          _checkLine(L('If losses continue, consult a fisheries technician.',
+              'Kung patuloy ang pagkamatay, kumonsulta sa fisheries technician.')),
+        ])
+      else
+        for (final finding in findings) ...[
+          _analysisCard([
+            Text(L(finding.factor.english, finding.factor.tagalog),
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.of(context).ink)),
+            const SizedBox(height: 10),
+            Text(_healthEffect(finding.factor),
+                style: TextStyle(
+                    fontSize: 13,
+                    height: 1.55,
+                    color: AppTheme.of(context).inkSoft)),
+            const SizedBox(height: 16),
+            for (final tip in _prevention(finding.factor)) _checkLine(tip),
+          ]),
+          const SizedBox(height: 12),
+        ],
+    ]);
   }
 
   String _findingExplanation(
@@ -984,28 +1072,63 @@ class _MortalityScreenState extends State<MortalityScreen> {
             'Maaaring mairita ang hasang at maapektuhan ang balanse ng asin sa katawan ng isda kapag acidic ang tubig.'),
       };
 
-  String _prevention(MortalityFactor factor) => switch (factor) {
-        MortalityFactor.lowOxygen => L(
-            'Check the aerator and backup power. Measure oxygen before sunrise and track overnight drops.',
-            'Suriin ang aerator at backup power. Sukatin ang oxygen bago sumikat ang araw at bantayan ang pagbaba nito sa gabi.'),
-        MortalityFactor.highOxygen => L(
-            'Verify with a calibrated meter at several depths. Track afternoon peaks and ask a technician to check total dissolved gases if high readings persist.',
-            'Kumpirmahin gamit ang calibrated meter sa iba’t ibang lalim. Bantayan ang pagtaas sa hapon at ipasuri ang kabuuang dissolved gases kung tuloy-tuloy ang mataas na reading.'),
-        MortalityFactor.highAmmonia => L(
-            'Retest ammonia with pH and temperature. Reduce feeding while levels remain high, remove excess feed, and check water exchange or filtration.',
-            'Sukatin muli ang ammonia kasama ng pH at temperatura. Bawasan muna ang pakain habang mataas ang reading, alisin ang sobrang pakain, at suriin ang pagpapalit ng tubig o filtration.'),
-        MortalityFactor.highTemperature => L(
-            'Track afternoon temperatures. Provide shade or access to deeper water and check dissolved oxygen during hot periods.',
-            'Bantayan ang temperatura sa hapon. Maglaan ng lilim o mas malalim na bahagi ng pond at suriin ang oxygen kapag mainit.'),
-        MortalityFactor.lowTemperature => L(
-            'Track early-morning temperatures and check incoming water before adding it. Make temperature changes gradually.',
-            'Bantayan ang temperatura sa madaling-araw at sukatin ang papasok na tubig bago ito idagdag. Iwasan ang biglaang pagbabago ng temperatura.'),
-        MortalityFactor.highPh => L(
-            'Compare morning and afternoon pH, check for algae blooms, and test ammonia when pH stays high.',
-            'Ihambing ang pH sa umaga at hapon, tingnan kung may algal bloom, at mag-test ng ammonia kapag patuloy na mataas ang pH.'),
-        MortalityFactor.lowPh => L(
-            'Recheck pH and alkalinity in the pond and source water. Ask a technician how to correct persistently low pH gradually.',
-            'Sukatin muli ang pH at alkalinity ng pond at ng pinagkukunan ng tubig. Kumonsulta sa technician para sa unti-unting pagwawasto kung patuloy na mababa ang pH.'),
+  List<String> _prevention(MortalityFactor factor) => switch (factor) {
+        MortalityFactor.lowOxygen => [
+            L('Keep the aerator and backup power ready. Check oxygen before sunrise and maintain adequate aeration overnight.',
+                'Ihanda ang aerator at backup power. Sukatin ang oxygen bago sumikat ang araw at tiyaking sapat ang aeration sa gabi.'),
+            L('Avoid overfeeding and remove leftover feed before it breaks down and consumes oxygen.',
+                'Iwasan ang sobrang pakain at alisin ang tirang pagkain bago ito mabulok at kumonsumo ng oxygen.'),
+            L('Reduce feeding while dissolved oxygen is low, especially during cloudy conditions.',
+                'Bawasan ang pakain habang mababa ang dissolved oxygen, lalo na kapag maulap.'),
+            L('Keep stocking density within the capacity of the pond and aeration equipment.',
+                'Iayon ang dami ng isda sa kayang suportahan ng pond at ng aeration equipment.'),
+          ],
+        MortalityFactor.highOxygen => [
+            L('Verify the reading with a calibrated meter at several depths.',
+                'Kumpirmahin ang reading gamit ang calibrated meter sa iba’t ibang lalim.'),
+            L('Track afternoon oxygen peaks.',
+                'Bantayan ang pagtaas ng oxygen sa hapon.'),
+            L('Ask a technician to check total dissolved gases if high readings persist.',
+                'Ipasuri sa technician ang kabuuang dissolved gases kung patuloy na mataas ang reading.'),
+          ],
+        MortalityFactor.highAmmonia => [
+            L('Retest ammonia together with pH and temperature.',
+                'Sukatin muli ang ammonia kasama ng pH at temperatura.'),
+            L('Reduce feeding while levels remain high and remove excess feed.',
+                'Bawasan muna ang pakain habang mataas ang reading at alisin ang sobrang pakain.'),
+            L('Check water exchange or filtration.',
+                'Suriin ang pagpapalit ng tubig o filtration.'),
+          ],
+        MortalityFactor.highTemperature => [
+            L('Track afternoon temperatures.',
+                'Bantayan ang temperatura sa hapon.'),
+            L('Provide shade or access to deeper water.',
+                'Maglaan ng lilim o mas malalim na bahagi ng pond.'),
+            L('Check dissolved oxygen during hot periods.',
+                'Suriin ang oxygen kapag mainit.'),
+          ],
+        MortalityFactor.lowTemperature => [
+            L('Track early-morning temperatures.',
+                'Bantayan ang temperatura sa madaling-araw.'),
+            L('Check incoming water before adding it.',
+                'Sukatin ang papasok na tubig bago ito idagdag.'),
+            L('Make temperature changes gradually.',
+                'Iwasan ang biglaang pagbabago ng temperatura.'),
+          ],
+        MortalityFactor.highPh => [
+            L('Compare morning and afternoon pH.',
+                'Ihambing ang pH sa umaga at hapon.'),
+            L('Check for algae blooms.', 'Tingnan kung may algal bloom.'),
+            L('Test ammonia when pH stays high.',
+                'Mag-test ng ammonia kapag patuloy na mataas ang pH.'),
+          ],
+        MortalityFactor.lowPh => [
+            L('Recheck pH and alkalinity in the pond.',
+                'Sukatin muli ang pH at alkalinity ng pond.'),
+            L('Test the source water.', 'Suriin ang tubig sa pinagkukunan.'),
+            L('Ask a technician how to correct persistently low pH gradually.',
+                'Kumonsulta sa technician para sa unti-unting pagwawasto kung patuloy na mababa ang pH.'),
+          ],
       };
 
   Widget _recordCard(MortalityRecord r) {
@@ -1151,83 +1274,87 @@ class _MortalityScreenState extends State<MortalityScreen> {
     final eventAt = r.eventAt;
     await showModalBottomSheet<void>(
       context: context,
-      backgroundColor: AppTheme.of(context).surface,
+      backgroundColor: AppTheme.of(context).bg,
       isScrollControlled: true,
-      showDragHandle: true,
-      builder: (sheetContext) => FractionallySizedBox(
-        heightFactor: .88,
-        child: SafeArea(
-          top: false,
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                    L('Mortality Information',
-                        'Impormasyon sa Namatay na Isda'),
-                    style: Theme.of(sheetContext).textTheme.titleLarge),
-                const SizedBox(height: 16),
-                _detailRow(
-                  L('Date and Time', 'Petsa at oras'),
-                  eventAt == null
-                      ? '${_prettyDate(r.date)} · ${L('Time unavailable', 'Walang oras na naitala')}'
-                      : _dateTime(eventAt.millisecondsSinceEpoch),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
+      builder: (sheetContext) {
+        sheetContext.select<AppStore, String>((store) => store.lang);
+        return FractionallySizedBox(
+          heightFactor: .9,
+          child: SafeArea(
+            top: false,
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 22, 20, 24),
+              child: Semantics(
+                container: true,
+                label: L(
+                    'Mortality Information', 'Impormasyon sa Namatay na Isda'),
+                child: Column(
+                  key: const ValueKey('mortality-details'),
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                              child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                Text(
+                                    '${r.count} ${L('fish died', 'isda ang namatay')}',
+                                    style: TextStyle(
+                                        fontSize: 20,
+                                        fontWeight: FontWeight.w800,
+                                        color: AppTheme.of(context).ink)),
+                                const SizedBox(height: 6),
+                                Text(
+                                    '${eventAt == null ? _prettyDate(r.date) : _dateTime(eventAt.millisecondsSinceEpoch)} · '
+                                    '${Pond.byId(r.pondId).name} · ${r.species}',
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        height: 1.5,
+                                        color: AppTheme.of(context).inkSoft)),
+                              ])),
+                          const SizedBox(width: 10),
+                          IconButton.filledTonal(
+                              style: IconButton.styleFrom(
+                                  backgroundColor: AppTheme.of(context)
+                                      .deep
+                                      .withValues(alpha: .12),
+                                  foregroundColor: AppTheme.of(context).ink),
+                              onPressed: () => Navigator.pop(sheetContext),
+                              tooltip: L('Close details', 'Isara ang detalye'),
+                              icon: const Icon(Icons.close_rounded, size: 20)),
+                        ]),
+                    if (r.notes.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      Text(r.notes,
+                          style: TextStyle(
+                              fontSize: 13,
+                              height: 1.5,
+                              color: AppTheme.of(context).inkSoft)),
+                    ],
+                    const SizedBox(height: 22),
+                    FutureBuilder<MortalityAnalysis?>(
+                        future: analysis,
+                        builder: (context, snapshot) => snapshot
+                                    .connectionState ==
+                                ConnectionState.done
+                            ? _analysisDetails(snapshot.data, r)
+                            : Padding(
+                                padding: const EdgeInsets.only(top: 16),
+                                child: Text(L('Checking recorded readings…',
+                                    'Sinusuri ang mga naitalang reading…')))),
+                  ],
                 ),
-                _detailRow(
-                    L('Number of Dead Fish', 'Bilang ng namatay na isda'),
-                    '${r.count}'),
-                _detailRow(L('Pond', 'Palaisdaan'), Pond.byId(r.pondId).name),
-                _detailRow(L('Species', 'Uri ng isda'), r.species),
-                if (r.notes.isNotEmpty)
-                  _detailRow(L('Notes', 'Mga tala'), r.notes),
-                FutureBuilder<MortalityAnalysis?>(
-                  future: analysis,
-                  builder: (context, snapshot) =>
-                      snapshot.connectionState == ConnectionState.done
-                          ? _analysisDetails(snapshot.data)
-                          : Padding(
-                              padding: const EdgeInsets.only(top: 16),
-                              child: Text(L('Checking recorded readings…',
-                                  'Sinusuri ang mga naitalang reading…')),
-                            ),
-                ),
-              ],
+              ),
             ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
-
-  Widget _detailRow(String label, String value) => Padding(
-        padding: const EdgeInsets.only(bottom: 10),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-              width: 112,
-              child: Text(
-                label,
-                style: TextStyle(
-                  fontSize: 11.5,
-                  color: AppTheme.of(context).inkSoft,
-                ),
-              ),
-            ),
-            Expanded(
-              child: Text(
-                value,
-                style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w600,
-                  color: AppTheme.of(context).ink,
-                ),
-              ),
-            ),
-          ],
-        ),
-      );
 
   /// "2026-07-24" → "Jul 24, 2026"; falls back to the raw string.
   String _prettyDate(String iso) {

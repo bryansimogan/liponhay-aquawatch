@@ -88,7 +88,10 @@ void main() {
         find.byType(TextField).at(1), 'Fish gasping at surface');
     await tester.tap(find.text('Save Record'));
     await tester.pumpAndSettle();
-    expect(find.text('Mortality Information'), findsOneWidget);
+    expect(find.byKey(const ValueKey('mortality-details')), findsOneWidget);
+    expect(find.text('3 fish died'), findsOneWidget);
+    expect(find.text('HOW WAS THIS CAUSE FOUND?'), findsOneWidget);
+    expect(find.byIcon(Icons.check_rounded), findsWidgets);
     expect(find.text('Fish gasping at surface'), findsWidgets);
     final prefs = await SharedPreferences.getInstance();
     final saved = (jsonDecode(prefs.getString('demo_mortality_pond1')!) as List)
@@ -97,7 +100,15 @@ void main() {
     expect(original.count, 3);
     expect(original.analysis!.reading!.dissolvedOxygen, 1.2);
     expect(store.mortality.single.n, 3);
-    Navigator.of(tester.element(find.text('Mortality Information'))).pop();
+    store.lang = 'tl';
+    await tester.pumpAndSettle();
+    expect(find.text('PAANO NATUKOY ANG SANHI?'), findsOneWidget);
+    expect(find.text('Fish gasping at surface'), findsWidgets);
+    store.lang = 'en';
+    await tester.pumpAndSettle();
+    Navigator.of(
+            tester.element(find.byKey(const ValueKey('mortality-details'))))
+        .pop();
     await tester.pumpAndSettle();
     store.simAction('fixo');
     await tester.tap(find.byTooltip('Edit record'));

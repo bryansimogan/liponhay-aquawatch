@@ -1,4 +1,5 @@
 import 'package:fish_farm_app/models/management_logs.dart';
+import 'package:fish_farm_app/models/incident.dart';
 import 'package:fish_farm_app/models/mortality_record.dart';
 import 'package:fish_farm_app/models/sensor_data.dart';
 import 'package:fish_farm_app/services/app_store.dart';
@@ -100,6 +101,7 @@ void main() {
         count: count,
         possibleCause: '',
         timestamp: start);
+    store.stock = const Stocking(n: 1000, area: 250, date: '2026-11-19');
     final alive = store.aliveCount;
     store.replaceMortalityRecords('pond1', [record(3)]);
     expect(store.aliveCount, alive - 3);

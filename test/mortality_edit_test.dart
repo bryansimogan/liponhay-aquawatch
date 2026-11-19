@@ -1,4 +1,5 @@
 import 'package:firebase_database/firebase_database.dart';
+import 'package:fish_farm_app/models/incident.dart';
 import 'package:fish_farm_app/services/firebase_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -52,6 +53,27 @@ void main() {
         },
         'additional_metadata': 'Preserve this field',
       };
+
+  test('stocking saves actual counts, fractional area and date atomically',
+      () async {
+    final reference = _Reference({'additional_metadata': 'keep'});
+    final stock = Stocking(n: 600, area: 250.5, date: '2026-11-19');
+    await FirebaseService(database: reference).saveStocking('pond1', stock);
+    expect(reference.data, {...stock.toMap(), 'additional_metadata': 'keep'});
+    expect(reference.transactions, 1);
+    expect(Stocking.tryFromMap(reference.data as Map)!.area, 250.5);
+  });
+
+  test('invalid stocking values cannot be written to the database', () async {
+    final reference = _Reference(null);
+    await expectLater(
+        FirebaseService(database: reference)
+            .saveStocking('pond1', const Stocking(n: -1, area: 0, date: '')),
+        throwsArgumentError);
+    expect(reference.data, isNull);
+    expect(reference.transactions, 0);
+    expect(Stocking.tryFromMap({'date': '2026-11-19'}), isNull);
+  });
 
   test('editing count and remarks preserves the original evidence and metadata',
       () async {

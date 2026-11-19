@@ -13,6 +13,7 @@ import '../utils/fmt.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/app_header.dart';
 import '../widgets/reveal.dart';
+import '../widgets/stocking_sheet.dart';
 import 'harvest_screen.dart';
 
 /// Management / Response Centre — ported from the AquaWatch prototype's
@@ -91,6 +92,18 @@ class _ManageScreenState extends State<ManageScreen> {
                 Reveal(delayMs: 120, child: _statsRow(s)),
                 const SizedBox(height: 12),
                 Reveal(delayMs: 150, child: _showIncidentsCard(s)),
+                const SizedBox(height: 12),
+                _linkCard(
+                    Icons.set_meal_outlined,
+                    AppTheme.of(context).aqua.withValues(alpha: .15),
+                    AppTheme.of(context).aqua,
+                    L('Stocking', 'Pag-stock ng isda'),
+                    '${grp(s.stock.n)} ${L('fingerlings stocked', 'na-stock na fingerlings')}',
+                    () => showModalBottomSheet<void>(
+                        context: context,
+                        isScrollControlled: true,
+                        backgroundColor: AppTheme.of(context).bg,
+                        builder: (_) => const StockingSheet())),
                 const SizedBox(height: 12),
                 Reveal(delayMs: 180, child: _harvestCard(s)),
               ],

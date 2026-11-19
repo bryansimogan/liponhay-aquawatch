@@ -116,6 +116,7 @@ class AppStore extends ChangeNotifier {
   ManagementLogs _management = ManagementLogs();
   StreamSubscription<ManagementLogs>? _managementSubscription;
   StreamSubscription<List<MortalityRecord>>? _mortalitySubscription;
+  StreamSubscription<Stocking?>? _stockingSubscription;
   Future<void> _managementWrites = Future.value();
   bool _disposed = false;
   bool managementSyncFailed = false;
@@ -128,6 +129,7 @@ class AppStore extends ChangeNotifier {
 
   // ─── Lifecycle ──────────────────────────────────────────────────
   Future<void> init() async {
+    if (!simulation) stock = const Stocking(n: 0, area: 0, date: '');
     await _load();
     final prefs = await SharedPreferences.getInstance();
     final selectedLanguage = prefs.getString(_languageKey);
@@ -158,6 +160,12 @@ class AppStore extends ChangeNotifier {
     if (simulation || _liveReadings != null) return;
     if (readings == null) {
       final firebase = FirebaseService();
+      _stockingSubscription = firebase.stockingStream('pond1').listen((value) {
+        if (value == null) return;
+        stock = value;
+        _save();
+        notifyListeners();
+      }, onError: (Object _) {});
       _managementSubscription =
           firebase.managementLogsStream('pond1').listen((state) {
         if (state.lastReadingAt < _management.lastReadingAt) return;
@@ -246,8 +254,10 @@ class AppStore extends ChangeNotifier {
     _readingExpiry?.cancel();
     unawaited(_managementSubscription?.cancel());
     unawaited(_mortalitySubscription?.cancel());
+    unawaited(_stockingSubscription?.cancel());
     _managementSubscription = null;
     _mortalitySubscription = null;
+    _stockingSubscription = null;
     final subscription = _liveReadings;
     _liveReadings = null;
     unawaited(subscription?.cancel().catchError((Object _) {}));
@@ -258,6 +268,7 @@ class AppStore extends ChangeNotifier {
     _disposed = true;
     _managementSubscription?.cancel();
     _mortalitySubscription?.cancel();
+    _stockingSubscription?.cancel();
     _tick?.cancel();
     _scenario?.cancel();
     _readingExpiry?.cancel();
@@ -481,6 +492,17 @@ class AppStore extends ChangeNotifier {
   }
 
   // ─── Owner actions ──────────────────────────────────────────────
+  Future<void> saveStocking(Stocking value, {FirebaseService? firebase}) async {
+    if (!value.isValid) throw ArgumentError('Invalid stocking information.');
+    if (!simulation) {
+      await (firebase ?? FirebaseService()).saveStocking('pond1', value);
+    }
+    if (_disposed) return;
+    if (simulation || _stockingSubscription == null) stock = value;
+    await _save();
+    if (!_disposed) notifyListeners();
+  }
+
   void addHarvest(HarvestRecord h) {
     harvest.insert(0, h);
     _note(
