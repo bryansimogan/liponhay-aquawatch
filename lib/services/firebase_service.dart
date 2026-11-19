@@ -11,7 +11,10 @@ import 'sync_service.dart';
 
 /// Service layer for all Firebase Realtime Database operations.
 class FirebaseService {
-  DatabaseReference get _db => FirebaseDatabase.instance.ref();
+  FirebaseService({DatabaseReference? database}) : _database = database;
+
+  final DatabaseReference? _database;
+  DatabaseReference get _db => _database ?? FirebaseDatabase.instance.ref();
 
   // ---- SENSOR DATA ----
 
