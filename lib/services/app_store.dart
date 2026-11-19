@@ -159,6 +159,10 @@ class AppStore extends ChangeNotifier {
       _managementSubscription =
           firebase.managementLogsStream('pond1').listen((state) {
         if (state.lastReadingAt < _management.lastReadingAt) return;
+        // Keep pre-upgrade phone logs until the first transaction imports them.
+        if (state.lastReadingAt == 0 &&
+            state.incidents.isEmpty &&
+            incidents.isNotEmpty) return;
         _replaceIncidents(state);
         managementSyncFailed = false;
         _save();
