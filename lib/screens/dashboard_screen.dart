@@ -228,8 +228,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           shape: CoachShape.circle,
           title: L("Settings", "Mga Setting"),
           body: L(
-            "Change the language, review the connection, or open Summary of Reports.",
-            "Palitan ang wika, tingnan ang koneksyon, o buksan ang Buod ng mga Ulat.",
+            "Change the language, review the connection, or manage SMS recipients.",
+            "Palitan ang wika, tingnan ang koneksyon, o pamahalaan ang mga tatanggap ng SMS.",
           ),
         ),
       ];
