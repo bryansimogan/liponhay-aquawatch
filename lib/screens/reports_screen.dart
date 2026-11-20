@@ -7,16 +7,15 @@ import '../app_theme.dart';
 import '../models/incident.dart';
 import '../services/app_store.dart';
 import '../services/i18n.dart';
+import '../services/report_service.dart';
 import '../utils/fmt.dart';
 import '../widgets/reveal.dart';
 
-/// Summary of Reports — ported from the prototype's `sumPanel` / `repData` /
-/// `printReport`. Pick a day, week or month and read a production report:
-/// incidents, owner actions, mortality, harvest and a cycle-to-date summary.
-/// "Copy report" puts a plain-text version on the clipboard (stands in for the
-/// prototype's browser print; a true PDF export can be added with a package).
+/// Filtered farm reports with clipboard export and Android printing.
 class ReportsScreen extends StatefulWidget {
-  const ReportsScreen({super.key});
+  const ReportsScreen({super.key, this.printReport});
+
+  final Future<bool> Function(FarmReport report)? printReport;
 
   @override
   State<ReportsScreen> createState() => _ReportsScreenState();
@@ -25,6 +24,7 @@ class ReportsScreen extends StatefulWidget {
 enum _Mode { day, week, month }
 
 class _ReportsScreenState extends State<ReportsScreen> {
+  bool _printing = false;
   _Mode _mode = _Mode.day;
   DateTime _anchor = DateTime.now();
 
@@ -129,10 +129,23 @@ class _ReportsScreenState extends State<ReportsScreen> {
         backgroundColor: AppTheme.of(context).header,
         actions: [
           IconButton(
+            icon: _printing
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.print_rounded, size: 20),
+            tooltip: L('Print report', 'I-print ang ulat'),
+            onPressed: _printing
+                ? null
+                : () => _printReport(
+                    FarmReport.capture(s, start: r0, end: r1, period: label)),
+          ),
+          IconButton(
             icon: const Icon(Icons.copy_rounded, size: 20),
             tooltip: L('Copy report', 'Kopyahin ang ulat'),
             onPressed: () => _copyReport(
-                s, label, incidents, resolved, unresolved, actions, mort, harv),
+                FarmReport.capture(s, start: r0, end: r1, period: label)),
           ),
         ],
       ),
@@ -150,11 +163,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(label,
-                  style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.of(context).ink)),
+              Expanded(
+                  child: Text(label,
+                      style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.of(context).ink))),
+              const SizedBox(width: 8),
               Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -359,8 +374,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final harvN = s.harvest.fold<int>(0, (a, b) => a + b.n);
     final harvKg = s.harvest.fold<double>(0, (a, b) => a + b.kg);
     final harvVal = s.harvest.fold<double>(0, (a, b) => a + b.value);
-    final surv =
-        s.stock.n > 0 ? ((s.stock.n - lost) / s.stock.n * 100).round() : 0;
+    final surv = s.stock.n > 0
+        ? ((s.stock.n - lost) / s.stock.n * 100).clamp(0, 100).round()
+        : 0;
     final rows = [
       (L('Fingerlings stocked', 'Na-stock na fingerlings'), grp(s.stock.n)),
       (L('Total fish died', 'Kabuuang namatay'), grp(lost)),
@@ -442,59 +458,25 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 TextStyle(fontSize: 12.5, color: AppTheme.of(context).inkSoft)),
       );
 
-  // ─── Copy as text ────────────────────────────────────────────────
-  void _copyReport(
-    AppStore s,
-    String label,
-    List<Incident> incidents,
-    List<Incident> resolved,
-    List<Incident> unresolved,
-    List<(Incident, IncidentRemark)> actions,
-    List<MortLog> mort,
-    List<HarvestRecord> harv,
-  ) {
-    final b = StringBuffer();
-    b.writeln('LIPONHAY FISH FARM — AquaWatch Report');
-    b.writeln('Pond 1 · Tilapia');
-    b.writeln('Period: $label');
-    b.writeln('Generated: ${fd(DateTime.now().millisecondsSinceEpoch)}');
-    b.writeln('');
-    b.writeln('SUMMARY');
-    b.writeln('  Incidents: ${incidents.length}');
-    b.writeln('  Resolved: ${resolved.length}');
-    b.writeln('  Not resolved: ${unresolved.length}');
-    b.writeln('  Fish died: ${mort.fold<int>(0, (a, m) => a + m.n)}');
-    b.writeln(
-        '  Harvested: ${grp(harv.fold<int>(0, (a, h) => a + h.n))} fish · ${harv.fold<double>(0, (a, h) => a + h.kg).toStringAsFixed(1)} kg');
-    b.writeln('');
-    b.writeln('WATER INCIDENTS');
-    if (incidents.isEmpty) b.writeln('  (none)');
-    for (final i in incidents) {
-      b.writeln('  ${fd(i.ts)} · ${i.title} · ${i.val} · ${_outcome(i)}');
-    }
-    b.writeln('');
-    b.writeln('ACTIONS BY OWNER');
-    if (actions.isEmpty) b.writeln('  (none)');
-    for (final (i, r) in actions) {
-      b.writeln(
-          '  ${fd(r.t)} · ${r.action ?? 'Fish died: ${r.died}'} · ${i.title} (${i.val})');
-    }
-    b.writeln('');
-    b.writeln('FISH MORTALITY');
-    if (mort.isEmpty) b.writeln('  (none)');
-    for (final m in mort) {
-      b.writeln('  ${fd(m.t)} · ${m.n} fish · ${m.cause}');
-    }
-    b.writeln('');
-    b.writeln('HARVEST');
-    if (harv.isEmpty) b.writeln('  (none)');
-    for (final h in harv) {
-      b.writeln(
-          '  ${dMed(h.t)} · ${grp(h.n)} fish · ${h.kg.toStringAsFixed(1)} kg · ${peso(h.value)}');
-    }
-    Clipboard.setData(ClipboardData(text: b.toString()));
+  void _copyReport(FarmReport report) {
+    Clipboard.setData(ClipboardData(text: report.text));
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(L(
             'Report copied to clipboard.', 'Nakopya ang ulat sa clipboard.'))));
+  }
+
+  Future<void> _printReport(FarmReport report) async {
+    setState(() => _printing = true);
+    try {
+      await (widget.printReport ?? ReportService.printReport)(report);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(L('Unable to print the report. Please try again.',
+                'Hindi ma-print ang ulat. Pakisubukan muli.'))));
+      }
+    } finally {
+      if (mounted) setState(() => _printing = false);
+    }
   }
 }

@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../app_theme.dart';
 import '../services/alert_count_service.dart';
@@ -81,9 +80,7 @@ class _SplashScreenState extends State<SplashScreen>
   Future<void> _run() async {
     // Sign-in starts immediately and runs alongside the animation rather than
     // after it, so the two waits overlap instead of adding up.
-    final signIn = context.read<AppStore>().simulation
-        ? Future<void>.value()
-        : _ensureSignedIn();
+    final signIn = _ensureSignedIn();
     final services = _startServices();
 
     await Future<void>.delayed(_logoHold);
@@ -112,12 +109,9 @@ class _SplashScreenState extends State<SplashScreen>
   /// alone, so the bell badge emptied the moment you opened any other tab.
   /// Starting it here means the number belongs to the app, not to one screen.
   Future<void> _startServices() async {
-    final prefs = await SharedPreferences.getInstance();
-    final simMode = prefs.getBool('simulation_mode') ?? false;
-    await SyncService.instance.start(simMode: simMode);
-    AlertCountService.instance.start(simMode: simMode);
-    await NotificationService.instance.start(simMode: simMode);
-    if (simMode) return;
+    await SyncService.instance.start();
+    AlertCountService.instance.start(simMode: false);
+    await NotificationService.instance.start(simMode: false);
 
     // Pull the current reading here rather than letting the Dashboard do it
     // on arrival. It warms the database connection and confirms there is

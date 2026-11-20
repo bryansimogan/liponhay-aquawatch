@@ -316,33 +316,28 @@ void main() {
           '2 days ago');
     });
 
-    test('markSynced advances the timestamp', () {
-      SyncService.instance.lastSynced.value =
-          DateTime.now().subtract(const Duration(hours: 5));
-      SyncService.instance.markSynced();
-      expect(SyncService.relativeLabel(SyncService.instance.lastSynced.value),
-          'just now');
-    });
-
-    test('a pre-NTP device timestamp does not read as 27000 days ago', () {
-      // 0 and a tiny millis()-based value both land in 1970. The reading still
-      // just arrived, so the label falls back to the phone clock.
-      for (final badMs in [0, 18827]) {
-        SyncService.instance.markDeviceSeen(badMs);
-        expect(
-          SyncService.relativeLabel(SyncService.instance.lastSynced.value),
-          'just now',
-        );
+    test('invalid device timestamps never invent a fresh sync', () {
+      final sync = SyncService();
+      for (final timestamp in [
+        0,
+        18827,
+        DateTime.now().add(const Duration(days: 1)).millisecondsSinceEpoch
+      ]) {
+        sync.markDeviceSeen(timestamp);
+        expect(sync.lastSynced.value, isNull);
+        expect(sync.online.value, isFalse);
       }
+      sync.dispose();
     });
 
-    test('a valid device timestamp preserves the real last sync time', () {
-      final twelveMinutesAgo =
-          DateTime.now().subtract(const Duration(minutes: 12));
-      SyncService.instance
-          .markDeviceSeen(twelveMinutesAgo.millisecondsSinceEpoch);
-      expect(SyncService.relativeLabel(SyncService.instance.lastSynced.value),
-          '12 mins ago');
+    test('a valid stale timestamp preserves its actual age', () {
+      final sync = SyncService();
+      sync.markDeviceSeen(DateTime.now()
+          .subtract(const Duration(minutes: 12))
+          .millisecondsSinceEpoch);
+      expect(SyncService.relativeLabel(sync.lastSynced.value), '12 mins ago');
+      expect(sync.online.value, isFalse);
+      sync.dispose();
     });
 
     test('relativeLabel never prints an absurd age', () {
@@ -352,7 +347,7 @@ void main() {
       expect(SyncService.relativeLabel(future), 'just now');
     });
 
-    testWidgets('pill separates the phone link from the device link',
+    testWidgets('pill requires both phone and controller for Online and Synced',
         (tester) async {
       // Both up.
       SyncService.instance.phoneOnline.value = true;
@@ -368,7 +363,8 @@ void main() {
       SyncService.instance.lastSynced.value =
           DateTime.now().subtract(const Duration(minutes: 12));
       await tester.pumpAndSettle();
-      expect(find.text('Online'), findsOneWidget);
+      expect(find.text('Online'), findsNothing);
+      expect(find.text('Offline'), findsOneWidget);
       expect(find.text('Last sync 12 mins ago'), findsOneWidget);
 
       // Phone has no data or WiFi.

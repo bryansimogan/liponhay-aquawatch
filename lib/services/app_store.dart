@@ -408,7 +408,6 @@ class AppStore extends ChangeNotifier {
     while (_demoReadings.first.timestamp < cutoff) {
       _demoReadings.removeFirst();
     }
-    SyncService.instance.markSynced();
     _checkReadings(_demoLastReading);
   }
 
@@ -582,14 +581,6 @@ class AppStore extends ChangeNotifier {
       if (raw == null) {
         if (simulation) {
           _seed();
-        } else {
-          // The old store generated incidents and mortality records from demo
-          // data. Carry over the operator's language, stocking, and harvest.
-          final previous = prefs.getString(_demoPrefsKey);
-          if (previous != null) {
-            final old = jsonDecode(previous) as Map<String, dynamic>;
-            _loadFarmDetails(old);
-          }
         }
         return;
       }

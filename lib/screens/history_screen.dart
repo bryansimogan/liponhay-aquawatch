@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 import '../app_theme.dart';
 import '../models/sensor_data.dart';
@@ -31,7 +30,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   final SimulationService _sim = SimulationService();
 
   String _pondId = 'pond1';
-  bool _simMode = true;
+  final bool _simMode = false;
   bool _loading = true;
 
   /// Hours of history to show, when following a rolling range.
@@ -70,8 +69,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Future<void> _init() async {
-    final prefs = await SharedPreferences.getInstance();
-    _simMode = prefs.getBool('simulation_mode') ?? false;
     _load();
   }
 

@@ -1,216 +1,179 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Tracks whether the ESP32 itself is actually online, not just whether the
-/// phone has a connection to Firebase.
-///
-/// The "current" reading node only gets overwritten by the device when it
-/// truly has a network link — while offline the ESP32 just buffers readings
-/// in memory (see the sketch's `dataBuffer`), so the node's `timestamp` stops
-/// advancing the moment the device drops. That makes it a reliable proxy for
-/// device liveness: if `.info/connected` is fine (the phone has internet) but
-/// that timestamp is stale, the ESP32 — not the app — is the one offline, and
-/// this must still report "Offline" rather than trusting the cached data.
-///
-/// Widgets listen via [online] and [lastSynced]; both are [ValueNotifier]s
-/// so a `ValueListenableBuilder` rebuilds only the small status chip.
-class SyncService {
-  SyncService._();
-  static final SyncService instance = SyncService._();
-
-  static const _lastSyncedKey = 'last_synced_at';
-
-  /// Timestamps before this are not real wall-clock time.
-  ///
-  /// The ESP32 stamps a reading with epoch milliseconds only once its clock is
-  /// NTP-set. Before that it sends 0 (or, on older firmware, a tiny
-  /// millis()-based value) — as a date that is 1970, which the age label
-  /// rendered as "27000 days ago" and which pinned the device permanently
-  /// "offline". Anything earlier than 2020 is treated as no real time.
-  static final int _minPlausibleMs = DateTime.utc(2020).millisecondsSinceEpoch;
-
-  /// How long without a fresh reading before the device counts as offline.
-  ///
-  /// Judged from when the app last RECEIVED an update, not the device's own
-  /// timestamp — a controller whose NTP clock lags the phone by a few seconds
-  /// was being flagged "quiet" while it was really pushing fine. The window is
-  /// The current firmware publishes about once a second, but one emergency
-  /// SMS can occupy the SIM800L for up to 36 seconds and a slow Firebase
-  /// request can take 15 seconds. This covers one legitimate alert cycle.
+/// Requires the phone's database link AND advancing, recent ESP32 readings.
+/// Neither a network interface nor a cached Firebase event proves device life.
+class SyncService with WidgetsBindingObserver {
+  SyncService({DateTime Function()? clock}) : _clock = clock ?? DateTime.now;
+  static final SyncService instance = SyncService();
   static const deviceStaleAfter = Duration(seconds: 60);
-
-  /// True while the ESP32 is both reachable AND has reported recently
-  /// (simulation always reports true — there's no device to lose).
-  final ValueNotifier<bool> online = ValueNotifier<bool>(true);
-
-  /// True while THIS PHONE can reach the database.
-  ///
-  /// Separate from [online] on purpose: they fail for different reasons and
-  /// call for different actions. The phone loses its link when WiFi drops or
-  /// a prepaid SIM runs out of data — something the person holding it can
-  /// fix. The device goes quiet when the controller at the pond loses power
-  /// or WiFi — something only a trip to the pond can fix. One chip saying
-  /// "Offline" for both left no way to tell which had happened.
-  final ValueNotifier<bool> phoneOnline = ValueNotifier<bool>(true);
-
-  /// Timestamp of the last reading actually taken by the device (from its
-  /// own `timestamp` field), not when the phone happened to receive it —
-  /// so a buffered reading that arrives late still shows its real age.
-  final ValueNotifier<DateTime?> lastSynced = ValueNotifier<DateTime?>(null);
-
-  StreamSubscription<DatabaseEvent>? _connSub;
+  static const _lastSyncedKey = 'last_synced_at';
+  static final _minPlausibleMs = DateTime.utc(2020).millisecondsSinceEpoch;
+  final DateTime Function() _clock;
+  final online = ValueNotifier<bool>(false);
+  final phoneOnline = ValueNotifier<bool>(false);
+  final lastSynced = ValueNotifier<DateTime?>(null);
+  StreamSubscription<bool>? _connSub;
+  StreamSubscription<bool>? _networkSub;
   Timer? _staleCheck;
   bool _started = false;
-  bool _simMode = true;
   bool _firebaseConnected = false;
-
-  /// Receipt time of the last LIVE controller event. This is intentionally
-  /// separate from both sensor values and the ESP32's wall clock.
+  bool _networkAvailable = false;
+  bool _observingLifecycle = false;
+  int _generation = 0;
+  int _networkRevision = 0;
+  int _lastDeviceTimestampMs = 0;
   DateTime? _lastDeviceContact;
 
-  /// Begins tracking. Safe to call more than once — repeat calls are ignored,
-  /// so use [restart] when the data source changes.
-  Future<void> start({required bool simMode}) async {
+  /// Streams can be supplied for deterministic connection/freshness tests.
+  Future<void> start(
+      {Stream<bool>? connections, Stream<bool>? networkAvailability}) async {
     if (_started) return;
     _started = true;
-    _simMode = simMode;
-
-    // Restore the last known sync time so an offline cold start can still
-    // say "last synced 12 mins ago" instead of showing nothing.
+    final generation = ++_generation;
     try {
       final prefs = await SharedPreferences.getInstance();
-      final storedMs = prefs.getInt(_lastSyncedKey);
-      // Ignore a cached value that predates 2020 — a bad timestamp saved by an
-      // older build must not resurface as "27000 days ago" on cold start.
-      if (storedMs != null && storedMs >= _minPlausibleMs) {
-        lastSynced.value = DateTime.fromMillisecondsSinceEpoch(storedMs);
+      final cached = prefs.getInt(_lastSyncedKey);
+      if (!_started || generation != _generation) return;
+      if (cached != null &&
+          _plausible(cached) &&
+          cached > (lastSynced.value?.millisecondsSinceEpoch ?? 0)) {
+        lastSynced.value = DateTime.fromMillisecondsSinceEpoch(cached);
+        _lastDeviceTimestampMs = cached;
       }
-    } catch (_) {
-      // No cached timestamp available — the label just reads "never" until
-      // the first sync lands.
-    }
+    } catch (_) {/* Cache must never prevent connection tracking. */}
+    if (!_started || generation != _generation) return;
 
-    if (simMode) {
-      online.value = true;
-      phoneOnline.value = true;
-      markSynced();
-    } else {
-      try {
-        _connSub = FirebaseDatabase.instance
-            .ref('.info/connected')
-            .onValue
-            .listen((event) {
-          _firebaseConnected = event.snapshot.value == true;
-          _recompute();
-        }, onError: (_) {
-          _firebaseConnected = false;
-          _recompute();
-        });
-      } catch (_) {
-        _firebaseConnected = false;
-      }
-      // The device going quiet doesn't fire any Firebase event on its own —
-      // nothing else would notice the reading has gone stale — so poll for
-      // that separately from whatever triggers `.info/connected` or a new
-      // reading.
-      _staleCheck = Timer.periodic(
-        const Duration(seconds: 5),
-        (_) => _recompute(),
-      );
+    final network = networkAvailability ??
+        Connectivity().onConnectivityChanged.map(_hasNetwork);
+    _networkSub = network.listen((available) {
+      _networkRevision++;
+      _networkAvailable = available;
+      if (!available) invalidateDevice();
       _recompute();
+    }, onError: (_) {
+      _networkRevision++;
+      _networkAvailable = false;
+      invalidateDevice();
+    });
+    _connSub = (connections ??
+            FirebaseDatabase.instance
+                .ref('.info/connected')
+                .onValue
+                .map((event) => event.snapshot.value == true))
+        .listen((connected) {
+      _firebaseConnected = connected;
+      if (!connected) invalidateDevice();
+      _recompute();
+    }, onError: (_) {
+      _firebaseConnected = false;
+      invalidateDevice();
+    });
+    if (networkAvailability == null) {
+      WidgetsBinding.instance.addObserver(this);
+      _observingLifecycle = true;
+      unawaited(_checkNetwork(generation));
+    }
+    _staleCheck = Timer.periodic(const Duration(seconds: 1), (_) => refresh());
+    _recompute();
+  }
+
+  static bool _hasNetwork(List<ConnectivityResult> results) =>
+      results.any((value) => value != ConnectivityResult.none);
+
+  Future<void> _checkNetwork(int generation) async {
+    final revision = _networkRevision;
+    try {
+      final results = await Connectivity().checkConnectivity();
+      if (!_started ||
+          generation != _generation ||
+          revision != _networkRevision) return;
+      _networkAvailable = _hasNetwork(results);
+    } catch (_) {
+      if (!_started ||
+          generation != _generation ||
+          revision != _networkRevision) return;
+      _networkAvailable = false;
+    }
+    if (!_networkAvailable) invalidateDevice();
+    _recompute();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _started) {
+      // Android can suspend connectivity broadcasts in the background.
+      _networkAvailable = false;
+      invalidateDevice();
+      unawaited(_checkNetwork(_generation));
     }
   }
 
-  /// Re-subscribes for a new data source. Call this after the simulation-mode
-  /// toggle changes, otherwise the status keeps reflecting the old source —
-  /// simulation always reports connected, so a real outage would go unnoticed.
-  Future<void> restart({required bool simMode}) async {
-    final subscription = _connSub;
-    _connSub = null;
-    unawaited(subscription?.cancel().catchError((Object _) {}));
-    _staleCheck?.cancel();
-    _staleCheck = null;
-    _started = false;
-    _firebaseConnected = false;
-    _lastDeviceContact = null;
-    lastSynced.value = null;
-    // Simulation has no link to lose; real mode is unknown until the
-    // `.info/connected` listener and the next reading report in.
-    online.value = simMode;
-    phoneOnline.value = simMode;
-    await start(simMode: simMode);
-  }
+  bool _plausible(int timestamp) =>
+      timestamp >= _minPlausibleMs &&
+      timestamp <=
+          _clock().add(const Duration(seconds: 5)).millisecondsSinceEpoch;
 
-  /// Records that data just arrived, timestamped by the phone's own clock.
-  /// Used by simulation mode, where there's no device clock to defer to.
-  void markSynced() {
-    final now = DateTime.now();
-    lastSynced.value = now;
-    if (!_simMode) _persist(now.millisecondsSinceEpoch);
-    _recompute();
-  }
-
-  /// Records a reading actually taken by the ESP32, timestamped by the
-  /// device's own clock (NTP-synced) rather than when the phone received it.
-  /// A reading buffered while offline and flushed later still shows its true
-  /// age instead of looking live just because it arrived this second.
-  void markDeviceSeen(int deviceTimestampMs) {
-    final now = DateTime.now();
-    _lastDeviceContact = now;
-    final latestPlausible =
-        now.add(const Duration(minutes: 5)).millisecondsSinceEpoch;
-
-    // Firebase immediately emits the last stored value, even when the ESP32
-    // is already off. Preserve a valid device timestamp so that cached value
-    // cannot turn into a fake new sync. Pre-NTP (1970) and implausibly future
-    // timestamps fall back to receipt time so older firmware remains usable.
-    final seen = deviceTimestampMs >= _minPlausibleMs &&
-            deviceTimestampMs <= latestPlausible
-        ? DateTime.fromMillisecondsSinceEpoch(deviceTimestampMs)
-        : now;
-    lastSynced.value = seen;
-    _persist(seen.millisecondsSinceEpoch);
-    _recompute();
-  }
-
-  void _persist(int epochMs) {
-    // Caching the timestamp is a convenience for the next cold start; if the
-    // write fails the in-memory value is still correct, so never let it throw.
-    SharedPreferences.getInstance()
-        .then((p) => p.setInt(_lastSyncedKey, epochMs))
-        .catchError((_) => false);
-  }
-
-  void _recompute() {
-    if (_simMode) {
-      phoneOnline.value = true;
-      online.value = true;
+  void markDeviceSeen(int timestamp) {
+    if (!_plausible(timestamp)) {
+      invalidateDevice();
       return;
     }
-    phoneOnline.value = _firebaseConnected;
-
-    // Firebase can stay connected after the ESP32 is powered off. Only call
-    // the controller synced while an actual device reading is still fresh;
-    // otherwise the UI shows the age of the last sync instead of "Synced".
-    final contact = _lastDeviceContact;
-    final fresh = contact != null &&
-        DateTime.now().difference(contact) <= deviceStaleAfter;
-    online.value = _firebaseConnected && fresh;
+    // Multiple subscribers and offline cache replays must not renew contact.
+    if (timestamp <= _lastDeviceTimestampMs) return;
+    _lastDeviceTimestampMs = timestamp;
+    final seen = DateTime.fromMillisecondsSinceEpoch(timestamp);
+    lastSynced.value = seen;
+    unawaited(SharedPreferences.getInstance()
+        .then((prefs) => prefs.setInt(_lastSyncedKey, timestamp))
+        .catchError((_) => false));
+    final age = _clock().difference(seen);
+    if (_firebaseConnected && _networkAvailable && age <= deviceStaleAfter) {
+      _lastDeviceContact = _clock();
+    } else {
+      _lastDeviceContact = null;
+    }
+    _recompute();
   }
 
-  /// Only for the demo build's offline/online showcase.
-  void setOnline(bool value) {
-    online.value = value;
-    phoneOnline.value = value;
-    if (value) markSynced();
+  void invalidateDevice() {
+    _lastDeviceContact = null;
+    _recompute();
+  }
+
+  /// Also used when resuming and by tests that advance the injected clock.
+  void refresh() => _recompute();
+
+  void _recompute() {
+    final connected = _networkAvailable && _firebaseConnected;
+    final now = _clock();
+    final contact = _lastDeviceContact;
+    final sample = lastSynced.value;
+    final fresh = contact != null &&
+        sample != null &&
+        !now.difference(contact).isNegative &&
+        now.difference(contact) <= deviceStaleAfter &&
+        now.difference(sample) <= deviceStaleAfter &&
+        sample.difference(now) <= const Duration(seconds: 5);
+    // Clear device first so no intermediate UI rebuild can claim a sync.
+    online.value = connected && fresh;
+    phoneOnline.value = connected;
   }
 
   void dispose() {
-    _connSub?.cancel();
-    _staleCheck?.cancel();
     _started = false;
+    _generation++;
+    unawaited(_connSub?.cancel());
+    unawaited(_networkSub?.cancel());
+    _staleCheck?.cancel();
+    if (_observingLifecycle) WidgetsBinding.instance.removeObserver(this);
+    _observingLifecycle = false;
+    _firebaseConnected = false;
+    _networkAvailable = false;
+    invalidateDevice();
   }
 
   /// "just now", "12 mins ago", "3 hours ago", "2 days ago".

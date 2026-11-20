@@ -91,7 +91,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
     _simMode = context.read<AppStore>().simulation;
-    await SyncService.instance.start(simMode: _simMode);
+    await SyncService.instance.start();
     if (!mounted) return;
     _listen();
     _maybeStartTour(prefs);
@@ -228,8 +228,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           shape: CoachShape.circle,
           title: L("Settings", "Mga Setting"),
           body: L(
-            "Change the language, review the connection, or start Demo Mode.",
-            "Palitan ang wika, tingnan ang koneksyon, o simulan ang Demo Mode.",
+            "Change the language, review the connection, or open Summary of Reports.",
+            "Palitan ang wika, tingnan ang koneksyon, o buksan ang Buod ng mga Ulat.",
           ),
         ),
       ];
@@ -280,11 +280,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
               });
             }
           } else if (mounted) {
+            SyncService.instance.invalidateDevice();
             _firstReadingDeadline?.cancel();
             setState(() => _loading = false);
           }
         },
         onError: (_) {
+          SyncService.instance.invalidateDevice();
           _firstReadingDeadline?.cancel();
           if (mounted) setState(() => _loading = false);
         },

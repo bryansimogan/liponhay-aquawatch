@@ -13,9 +13,10 @@ Future<void> main() async {
   await Firebase.initializeApp();
   await initializeDateFormatting();
   final prefs = await SharedPreferences.getInstance();
-  final simulation = prefs.getBool('simulation_mode') ?? false;
+  // Retire the legacy demo preference, including existing installations.
+  await prefs.remove('simulation_mode');
   await AppAppearance.load();
-  final store = AppStore(simulation: simulation);
+  final store = AppStore(simulation: false);
   await store.init();
 
   runApp(AquaWatchApp(store: store, home: const SplashScreen()));

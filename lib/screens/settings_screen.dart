@@ -10,7 +10,6 @@ import '../services/firebase_service.dart';
 import '../services/i18n.dart';
 import '../services/sync_service.dart';
 import '../widgets/app_bottom_nav.dart';
-import '../widgets/aqua_watch_app.dart';
 import '../widgets/app_header.dart';
 import '../widgets/reveal.dart';
 import '../widgets/sync_status.dart';
@@ -38,7 +37,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// its own, without the operator reopening the screen. Day-granularity, so a
   /// minute is frequent enough — the per-second SMS cooldown is a separate job.
   Timer? _clock;
-  bool _criticalDemo = false;
 
   @override
   void initState() {
@@ -178,8 +176,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 16),
 
-                _demoCard(),
-                const SizedBox(height: 18),
                 _sectionLabel('CONNECTION'),
                 // This phone's own link, listed first because it is the only
                 // one of the two the person reading this can act on: WiFi out
@@ -366,159 +362,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 12),
           Row(children: [opt('en', 'English'), opt('tl', 'Tagalog')]),
-        ],
-      ),
-    );
-  }
-
-  Widget _demoCard() {
-    final store = context.watch<AppStore>();
-    final colors = AppTheme.of(context);
-    final title = L('Demo Mode', 'Demo Mode');
-    final help = L('Simulated sensor readings for testing and presentations.',
-        'Mga simulated na reading para sa pagsubok at presentasyon.');
-    Widget chip(String label, VoidCallback? onTap) => OutlinedButton(
-          onPressed: onTap,
-          style: OutlinedButton.styleFrom(
-            foregroundColor: colors.deep,
-            side: BorderSide(color: colors.deep.withValues(alpha: .24)),
-            minimumSize: const Size(0, 40),
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-          ),
-          child: Text(label, style: const TextStyle(fontSize: 12)),
-        );
-    Widget controls(String heading, List<Widget> buttons) => Padding(
-          padding: const EdgeInsets.only(top: 13),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _sectionLabel(heading),
-              Wrap(spacing: 8, runSpacing: 5, children: buttons),
-            ],
-          ),
-        );
-
-    return Container(
-      decoration: colors.card(),
-      child: ExpansionTile(
-        initiallyExpanded: store.simulation,
-        shape: const Border(),
-        collapsedShape: const Border(),
-        leading: Icon(Icons.science_outlined, color: colors.deep),
-        title: Text(title),
-        subtitle: store.simulation
-            ? Text(
-                L('On · simulated readings', 'Aktibo · simulated na readings'))
-            : null,
-        expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-        childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-        children: [
-          Text(help, style: Theme.of(context).textTheme.bodyMedium),
-          const SizedBox(height: 8),
-          if (!store.simulation)
-            ElevatedButton(
-              onPressed: () => AquaWatchApp.changeMode(context, true),
-              child: Text(L('Start Demo Mode', 'Simulan ang Demo Mode')),
-            )
-          else ...[
-            Text(
-              'pH ${store.ph.toStringAsFixed(2)}  ·  '
-              '${store.temp.toStringAsFixed(1)} °C  ·  '
-              'DO ${store.doxy.toStringAsFixed(2)} mg/L',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            if (store.demoStage case final stage?)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(stage, style: TextStyle(color: colors.deep)),
-              ),
-            controls(L('1 · WATER PROBLEM', '1 · PROBLEMA SA TUBIG'), [
-              ChoiceChip(
-                label: Text(L('Warning', 'Babala')),
-                selected: !_criticalDemo,
-                onSelected: (_) => setState(() => _criticalDemo = false),
-              ),
-              ChoiceChip(
-                label: Text(L('Critical', 'Kritikal')),
-                selected: _criticalDemo,
-                onSelected: (_) => setState(() => _criticalDemo = true),
-              ),
-              for (final (key, label) in [
-                ('ph', L('High pH', 'Mataas na pH')),
-                ('pl', L('Low pH', 'Mababang pH')),
-                ('t', L('High temperature', 'Mataas na temperatura')),
-                ('tc', L('Low temperature', 'Mababang temperatura')),
-                ('o', L('Low oxygen', 'Mababang oxygen')),
-              ])
-                chip(label,
-                    () => store.simProblem(key, critical: _criticalDemo)),
-            ]),
-            controls(
-                L('2 · WATER RECOVERS', '2 · BUMABALIK SA NORMAL ANG TUBIG'), [
-              chip(L('pH returns to normal', 'Bumalik sa normal ang pH'),
-                  () => store.simAction('fixph')),
-              chip(
-                  L('Temperature returns to normal',
-                      'Bumalik sa normal ang temperatura'),
-                  () => store.simAction('fixt')),
-              chip(L('Oxygen recovers', 'Bumalik sa normal ang oxygen'),
-                  () => store.simAction('fixo')),
-              chip(L('Oxygen drops again', 'Bumaba ulit ang oxygen'),
-                  () => store.simProblem('o')),
-            ]),
-            controls(
-                L('3 · AUTOMATIC SCENARIOS', '3 · MGA AUTOMATIC NA SCENARIO'), [
-              chip(
-                  L('High pH then recovery',
-                      'Mataas na pH tapos bumalik sa normal'),
-                  () => store.simScenario('ph')),
-              chip(
-                  L('Oxygen drops then recovers',
-                      'Bumaba ang oxygen tapos bumalik sa normal'),
-                  () => store.simScenario('o')),
-              chip(
-                  L('Temperature drifts then recovers',
-                      'Nagbago ang temperatura tapos bumalik sa normal'),
-                  () => store.simScenario('t')),
-              chip(
-                  L('Water stays unsafe',
-                      'Nananatiling hindi ligtas ang tubig'),
-                  () => store.simScenario('unresolved')),
-            ]),
-            controls(
-                L('4 · DEMO TIME AND SIM PROMO',
-                    '4 · ORAS NG DEMO AT SIM PROMO'),
-                [
-                  chip(
-                      L('Advance 10 minutes (demo)',
-                          'Iabante ang 10 minuto (demo)'),
-                      store.openIncidents.any((i) => i.isVerifying)
-                          ? () => store.simAdvance(AppStore.verificationPeriod)
-                          : null),
-                  chip(
-                      L('Advance 3 hours (demo)', 'Iabante ang 3 oras (demo)'),
-                      store.openIncidents.isEmpty
-                          ? null
-                          : () => store.simAdvance(const Duration(hours: 3))),
-                  chip(L('Promo ends in 2 hours', 'Promo matatapos sa 2 oras'),
-                      () => store.simPromo(const Duration(hours: 2))),
-                  chip(L('Promo expired', 'Expired na ang promo'),
-                      () => store.simPromo(const Duration(hours: -1))),
-                  chip(L('Renew promo', 'I-renew ang promo'),
-                      () => store.simPromo(const Duration(days: 3))),
-                ]),
-            if (store.demoPromoStatus case final promo?)
-              Text(promo, style: Theme.of(context).textTheme.bodyMedium),
-            const SizedBox(height: 8),
-            Wrap(spacing: 8, children: [
-              chip(
-                  L('Reset readings to normal',
-                      'Ibalik sa normal ang readings'),
-                  store.simReset),
-              chip(L('Exit Demo Mode', 'Lumabas sa Demo Mode'),
-                  () => AquaWatchApp.changeMode(context, false)),
-            ]),
-          ],
         ],
       ),
     );

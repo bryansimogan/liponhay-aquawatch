@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../app_theme.dart';
 import '../models/sensor_data.dart';
 import '../services/firebase_service.dart';
@@ -22,7 +21,7 @@ class _CorrectiveActionScreenState extends State<CorrectiveActionScreen> {
 
   SensorData? _currentData;
   bool _loading = true;
-  bool _simMode = true;
+  final bool _simMode = false;
 
   @override
   void initState() {
@@ -31,8 +30,6 @@ class _CorrectiveActionScreenState extends State<CorrectiveActionScreen> {
   }
 
   Future<void> _loadMode() async {
-    final prefs = await SharedPreferences.getInstance();
-    _simMode = prefs.getBool('simulation_mode') ?? false;
     _loadData();
   }
 

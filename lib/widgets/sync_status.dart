@@ -3,17 +3,7 @@ import 'package:flutter/material.dart';
 import '../app_theme.dart';
 import '../services/sync_service.dart';
 
-/// Two chips: this phone's link, and the controller's.
-///
-/// They were one chip reading "Synced" or "Offline", which could not say which
-/// of the two had actually dropped. Split, the pair answers the question a
-/// farmer asks first — is it me or is it the pond?
-///
-///   Online  · Synced          everything reporting
-///   Online  · 12 mins ago     phone fine, controller quiet
-///   Offline · 12 mins ago     phone has no data or WiFi
-///
-/// The labels re-render every 20s so a relative time never goes stale.
+/// Overall live status and the age of the last actual controller reading.
 class SyncPill extends StatefulWidget {
   const SyncPill({super.key});
 
@@ -50,29 +40,28 @@ class _SyncPillState extends State<SyncPill> {
             return ValueListenableBuilder<DateTime?>(
               valueListenable: SyncService.instance.lastSynced,
               builder: (context, lastSynced, _) {
-                return Row(
-                  mainAxisSize: MainAxisSize.min,
+                final live = phoneOnline && synced;
+                return Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
                   children: [
                     _Chip(
-                      icon: phoneOnline
-                          ? Icons.wifi_rounded
-                          : Icons.wifi_off_rounded,
-                      label: phoneOnline ? 'Online' : 'Offline',
-                      color: phoneOnline
+                      icon: live ? Icons.wifi_rounded : Icons.wifi_off_rounded,
+                      label: live ? 'Online' : 'Offline',
+                      color: live
                           ? AppTheme.of(context).deep
                           : AppTheme.of(context).coral,
                     ),
-                    const SizedBox(width: 6),
                     _Chip(
-                      icon: synced
+                      icon: live
                           ? Icons.cloud_done_rounded
                           : Icons.cloud_off_rounded,
                       // With nothing fresh from the device, the age of the
                       // last reading says more than the word "offline" does.
-                      label: synced
+                      label: live
                           ? 'Synced'
                           : 'Last sync ${SyncService.relativeLabel(lastSynced)}',
-                      color: synced
+                      color: live
                           ? AppTheme.of(context).aqua
                           : AppTheme.of(context).amber,
                     ),
@@ -188,7 +177,7 @@ class _SyncBannerState extends State<SyncBanner> {
                   duration: const Duration(milliseconds: 300),
                   curve: Curves.easeOutCubic,
                   alignment: Alignment.topCenter,
-                  child: online
+                  child: (online && phoneOnline)
                       ? const SizedBox(width: double.infinity)
                       : AnimatedOpacity(
                           opacity: 1,

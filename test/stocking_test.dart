@@ -32,6 +32,21 @@ void main() {
     expect(store.aliveCount, 0);
   });
 
+  test('legacy demo stock and harvest never migrate into a fresh live store',
+      () async {
+    SharedPreferences.setMockInitialValues({
+      'simulation_mode': true,
+      'aqua_store_v1': '{"stock":{"n":1000,"area":250,"date":"2026-09-20"},'
+          '"harv":[{"id":1,"t":1795050000000,"n":100,"kg":20}]}',
+    });
+    final store = AppStore(simulation: false);
+    addTearDown(store.dispose);
+    await store.init();
+    expect(store.stock.n, 0);
+    expect(store.harvest, isEmpty);
+    expect(store.mortality, isEmpty);
+  });
+
   test('a rejected live save preserves the last known stock', () async {
     final store = AppStore(simulation: false);
     addTearDown(store.dispose);
