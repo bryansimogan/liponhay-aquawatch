@@ -91,8 +91,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
     _simMode = context.read<AppStore>().simulation;
-    await SyncService.instance.start();
-    if (!mounted) return;
     _listen();
     _maybeStartTour(prefs);
   }
@@ -269,9 +267,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _sub = _firebase.currentReadingStream(_pondId).listen(
         (data) {
           if (data != null) {
-            // The device's own reading timestamp, not the phone's receive
-            // time — so a stale ESP32 reading reads as stale, not "just now".
-            SyncService.instance.markDeviceSeen(data.timestamp);
             _firstReadingDeadline?.cancel();
             if (mounted) {
               setState(() {
@@ -280,13 +275,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               });
             }
           } else if (mounted) {
-            SyncService.instance.invalidateDevice();
             _firstReadingDeadline?.cancel();
             setState(() => _loading = false);
           }
         },
         onError: (_) {
-          SyncService.instance.invalidateDevice();
           _firstReadingDeadline?.cancel();
           if (mounted) setState(() => _loading = false);
         },
@@ -343,6 +336,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
       children: [
+        const Align(alignment: Alignment.centerRight, child: SyncPill()),
+        const SizedBox(height: 12),
         const SyncBanner(),
         const SizedBox(height: 8),
         Container(

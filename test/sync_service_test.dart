@@ -9,19 +9,28 @@ void main() {
   late SyncService sync;
   late StreamController<bool> connection;
   late StreamController<bool> network;
+  late StreamController<int?> device;
+  late StreamController<Duration> offsets;
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
     now = DateTime(2026, 11, 20, 14);
     sync = SyncService(clock: () => now);
     connection = StreamController<bool>(sync: true);
     network = StreamController<bool>(sync: true);
+    device = StreamController<int?>(sync: true);
+    offsets = StreamController<Duration>(sync: true);
     await sync.start(
-        connections: connection.stream, networkAvailability: network.stream);
+        connections: connection.stream,
+        networkAvailability: network.stream,
+        deviceTimestamps: device.stream,
+        serverTimeOffsets: offsets.stream);
   });
   tearDown(() async {
     sync.dispose();
     await connection.close();
     await network.close();
+    await device.close();
+    await offsets.close();
   });
   void connect() {
     network.add(true);
@@ -70,6 +79,34 @@ void main() {
     connection.addError(StateError('Unreachable database'));
     expect(sync.online.value, isFalse);
     expect(sync.phoneOnline.value, isFalse);
+  });
+
+  test('an advancing ESP32 timestamp can arrive before the connection event',
+      () {
+    network.add(true);
+    connection.add(false);
+    device.add(now.millisecondsSinceEpoch);
+    expect(sync.online.value, isFalse);
+    connection.add(true);
+    expect(sync.online.value, isTrue);
+    device.add(null);
+    expect(sync.online.value, isFalse);
+  });
+
+  test(
+      'server time corrects phone clock skew and fresh events allow a slightly fast device',
+      () {
+    connect();
+    offsets.add(const Duration(hours: 1));
+    device.add(
+        now.add(const Duration(hours: 1, seconds: 30)).millisecondsSinceEpoch);
+    expect(sync.online.value, isTrue);
+    now = now.add(const Duration(seconds: 61));
+    sync.refresh();
+    expect(sync.online.value, isFalse);
+    device.add(
+        now.add(const Duration(hours: 1, seconds: 30)).millisecondsSinceEpoch);
+    expect(sync.online.value, isTrue);
   });
 
   test(

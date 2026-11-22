@@ -81,13 +81,13 @@ class _SplashScreenState extends State<SplashScreen>
     // Sign-in starts immediately and runs alongside the animation rather than
     // after it, so the two waits overlap instead of adding up.
     final signIn = _ensureSignedIn();
-    final services = _startServices();
+    final services = signIn.then((_) => _startServices());
 
     await Future<void>.delayed(_logoHold);
     if (!mounted) return;
     _handover.forward();
 
-    await Future.wait([signIn, services, Future<void>.delayed(_loaderFloor)]);
+    await Future.wait([services, Future<void>.delayed(_loaderFloor)]);
     if (!mounted) return;
 
     context.read<AppStore>().connectLive();

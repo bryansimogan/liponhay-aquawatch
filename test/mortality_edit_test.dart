@@ -1,5 +1,6 @@
 import 'package:firebase_database/firebase_database.dart';
 import 'package:fish_farm_app/models/incident.dart';
+import 'package:fish_farm_app/models/mortality_record.dart';
 import 'package:fish_farm_app/services/firebase_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -20,6 +21,7 @@ class _Reference extends Fake implements DatabaseReference {
   Object? data;
   final bool deleteAfterRead;
   int transactions = 0;
+  bool? lastApplyLocally;
 
   @override
   DatabaseReference child(String path) => this;
@@ -36,6 +38,7 @@ class _Reference extends Fake implements DatabaseReference {
       Transaction Function(Object?) handler,
       {bool applyLocally = true}) async {
     transactions++;
+    lastApplyLocally = applyLocally;
     final result = handler(data);
     if (!result.aborted) data = result.value;
     return _Result(!result.aborted);
@@ -90,6 +93,27 @@ void main() {
     expect(result['water_analysis'], saved['water_analysis']);
     expect(result['additional_metadata'], saved['additional_metadata']);
     expect(saved['count'], 3);
+  });
+
+  test(
+      'a new positive count is published after commit and a retry keeps one record',
+      () async {
+    final reference = _Reference(null);
+    final service = FirebaseService(database: reference);
+    final record = MortalityRecord(
+        id: 'one',
+        date: '2026-11-19',
+        pondId: 'pond1',
+        species: 'Tilapia',
+        count: 3,
+        possibleCause: '',
+        timestamp: 1795050000000);
+    await service.addMortalityRecord(record);
+    expect(reference.lastApplyLocally, isFalse);
+    expect(reference.data, record.toMap());
+    final saved = reference.data;
+    await service.addMortalityRecord(record);
+    expect(identical(reference.data, saved), isTrue);
   });
 
   test('count-only callers retain saved remarks', () async {

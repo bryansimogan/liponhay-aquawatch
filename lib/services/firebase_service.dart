@@ -221,12 +221,22 @@ class FirebaseService {
 
   /// Add a mortality record.
   Future<void> addMortalityRecord(MortalityRecord record) async {
-    await _db
+    if (record.count <= 0) throw ArgumentError('Enter a positive fish count.');
+    final result = await _db
         .child('ponds')
         .child(record.pondId)
         .child('mortality')
         .child(record.id)
-        .set(record.toMap());
+        .runTransaction((current) {
+      if (current == null) return Transaction.success(record.toMap());
+      if (current is Map &&
+          current['count'] == record.count &&
+          (current['notes'] ?? '') == record.notes) {
+        return Transaction.success(current);
+      }
+      return Transaction.abort();
+    }, applyLocally: false);
+    if (!result.committed) throw StateError('Mortality record was not saved.');
   }
 
   /// Update the count while preserving the reported date and evidence.
@@ -236,6 +246,7 @@ class FirebaseService {
     required int count,
     String? notes,
   }) async {
+    if (count <= 0) throw ArgumentError('Enter a positive fish count.');
     final reference =
         _db.child('ponds').child(pondId).child('mortality').child(recordId);
     final saved = await reference.get();

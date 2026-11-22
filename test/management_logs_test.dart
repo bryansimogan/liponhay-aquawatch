@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:fish_farm_app/models/management_logs.dart';
 import 'package:fish_farm_app/models/incident.dart';
 import 'package:fish_farm_app/models/mortality_record.dart';
@@ -109,5 +111,33 @@ void main() {
     expect(store.aliveCount, alive - 5);
     store.replaceMortalityRecords('pond1', []);
     expect(store.aliveCount, alive);
+  });
+
+  test('unsafe readings and mortality from a previous batch do not lower stock',
+      () async {
+    SharedPreferences.setMockInitialValues({});
+    final now = DateTime.fromMillisecondsSinceEpoch(start);
+    final store = AppStore(simulation: false, clock: () => now);
+    addTearDown(store.dispose);
+    await store.init();
+    store.stock = const Stocking(n: 1000, area: 250, date: '2026-11-19');
+    // This was reported today, but the fish died before the current stocking.
+    final old = MortalityRecord(
+        id: 'old',
+        date: '2026-11-18',
+        pondId: 'pond1',
+        species: 'Tilapia',
+        count: 50,
+        possibleCause: 'High pH',
+        timestamp: start);
+    store.replaceMortalityRecords('pond1', [old]);
+    final readings = StreamController<SensorData?>(sync: true);
+    store.connectLive(readings: readings.stream);
+    readings.add(sample(0, ph: 10.5, oxygen: 1));
+    expect(store.openIncidents, isNotEmpty);
+    expect(store.mortality.single.n, 50);
+    expect(store.cycleDeaths, 0);
+    expect(store.aliveCount, 1000);
+    await readings.close();
   });
 }

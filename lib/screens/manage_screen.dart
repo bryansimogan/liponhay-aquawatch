@@ -461,12 +461,9 @@ class _ManageScreenState extends State<ManageScreen> {
   // ─── Stats row ───────────────────────────────────────────────────
   Widget _statsRow(AppStore s) {
     final alive = s.aliveCount;
+    final lost = s.cycleDeaths;
     final pct = (s.stock.n > 0)
-        ? ((s.stock.n - s.mortality.fold<int>(0, (a, b) => a + b.n)) /
-                s.stock.n *
-                100)
-            .round()
-            .clamp(0, 100)
+        ? ((s.stock.n - lost) / s.stock.n * 100).round().clamp(0, 100)
         : 0;
     final recovered = s.incidents
         .where((i) => i.st == 'resolved' && i.closedAt != null)
@@ -476,7 +473,6 @@ class _ManageScreenState extends State<ManageScreen> {
         : dur((recovered.fold<int>(0, (sum, i) => sum + i.closedAt! - i.ts) /
                 recovered.length)
             .round());
-    final lost = s.mortality.fold<int>(0, (a, b) => a + b.n);
 
     return Row(
       children: [

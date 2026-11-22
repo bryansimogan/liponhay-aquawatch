@@ -110,12 +110,13 @@ class _MortalityScreenState extends State<MortalityScreen> {
       _records = initial;
       _loading = false;
     });
-    _store.replaceMortalityRecords(pondId, initial);
-    if (_simMode) return;
+    if (_simMode) {
+      _store.replaceMortalityRecords(pondId, initial);
+      return;
+    }
     _subscription = _firebase.mortalityStream(pondId).listen((records) {
       if (mounted && pondId == _pondId) {
         setState(() => _records = records);
-        _store.replaceMortalityRecords(pondId, records);
       }
     }, onError: (Object _) {});
   }

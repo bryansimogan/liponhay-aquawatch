@@ -217,7 +217,6 @@ class AppStore extends ChangeNotifier {
     _readingExpiry?.cancel();
     _readingExpiry =
         Timer(age.isNegative ? maxAge : maxAge - age, _expireReading);
-    SyncService.instance.markDeviceSeen(reading.timestamp);
     ph = reading.ph;
     temp = reading.temperature;
     doxy = reading.dissolvedOxygen;
@@ -315,11 +314,25 @@ class AppStore extends ChangeNotifier {
 
   List<Incident> get openIncidents => incidents.where((i) => i.isOpen).toList();
 
-  int get aliveCount {
-    final lost = mortality.fold<int>(0, (a, b) => a + b.n);
-    final harv = harvest.fold<int>(0, (a, b) => a + b.n);
-    return max(0, stock.n - lost - harv);
+  int? get _stockedAt => DateTime.tryParse(stock.date)?.millisecondsSinceEpoch;
+
+  int get cycleDeaths {
+    final start = _stockedAt;
+    return mortality
+        .where((log) => log.n > 0 && (start == null || log.t >= start))
+        .fold(0, (total, log) => total + log.n);
   }
+
+  Iterable<HarvestRecord> get cycleHarvest {
+    final start = _stockedAt;
+    return harvest.where((record) => start == null || record.t >= start);
+  }
+
+  int get aliveCount => max(
+      0,
+      stock.n -
+          cycleDeaths -
+          cycleHarvest.fold<int>(0, (total, h) => total + h.n));
 
   void simProblem(String key, {bool critical = false}) {
     if (!simulation) return;
@@ -478,14 +491,15 @@ class AppStore extends ChangeNotifier {
     if (pondId != 'pond1') return;
     mortality
       ..clear()
-      ..addAll(records.map((record) => MortLog(
-            n: record.count,
-            cause: record.analysis?.findings
-                    .map((f) => f.factor.english)
-                    .join(' · ') ??
-                record.possibleCause,
-            t: record.eventAt?.millisecondsSinceEpoch ?? record.timestamp,
-          )));
+      ..addAll(
+          records.where((record) => record.count > 0).map((record) => MortLog(
+                n: record.count,
+                cause: record.analysis?.findings
+                        .map((f) => f.factor.english)
+                        .join(' · ') ??
+                    record.possibleCause,
+                t: (record.eventAt ?? record.when).millisecondsSinceEpoch,
+              )));
     _save();
     notifyListeners();
   }
@@ -625,13 +639,6 @@ class AppStore extends ChangeNotifier {
     final now = DateTime.now().millisecondsSinceEpoch;
     stock = Stocking(n: 1000, area: 250, date: '${DateTime.now().year}-09-20');
     promo = GsmConfig.promo(name: 'AllNetSurf10', days: 1);
-    mortality
-      ..clear()
-      ..add(MortLog(
-          n: 3,
-          cause: L('Disease / infection', 'Sakit / impeksiyon'),
-          t: now - 6 * 3600000,
-          snap: 'DO 2.57 mg/L · pH 7.99 · 29.8 °C'));
     // One already-resolved high-pH incident so history/reports read true.
     incidents
       ..clear()

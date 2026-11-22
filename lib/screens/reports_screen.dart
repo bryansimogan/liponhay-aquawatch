@@ -370,10 +370,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
       );
 
   Widget _productionSummary(AppStore s) {
-    final lost = s.mortality.fold<int>(0, (a, b) => a + b.n);
-    final harvN = s.harvest.fold<int>(0, (a, b) => a + b.n);
-    final harvKg = s.harvest.fold<double>(0, (a, b) => a + b.kg);
-    final harvVal = s.harvest.fold<double>(0, (a, b) => a + b.value);
+    final lost = s.cycleDeaths;
+    final harvN = s.cycleHarvest.fold<int>(0, (a, b) => a + b.n);
+    final harvKg = s.cycleHarvest.fold<double>(0, (a, b) => a + b.kg);
+    final harvVal = s.cycleHarvest.fold<double>(0, (a, b) => a + b.value);
     final surv = s.stock.n > 0
         ? ((s.stock.n - lost) / s.stock.n * 100).clamp(0, 100).round()
         : 0;

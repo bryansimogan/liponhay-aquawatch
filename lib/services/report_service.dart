@@ -46,7 +46,8 @@ class FarmReport {
     final responses = incidents.where((i) => i.actAt != null).toList();
     final recoveries =
         resolved.where((i) => i.actAt != null && i.closedAt != null).toList();
-    final lost = store.mortality.fold<int>(0, (sum, m) => sum + m.n);
+    final lost = store.cycleDeaths;
+    final cycleHarvest = store.cycleHarvest;
     String outcome(Incident i) => switch (i.st) {
           'resolved' => L('Resolved', 'Naresolba'),
           'unresolved' => L('Not resolved', 'Hindi naresolba'),
@@ -163,7 +164,7 @@ class FarmReport {
             [L('Total fish died', 'Kabuuang namatay'), '$lost'],
             [
               L('Total harvested fish', 'Kabuuang na-harvest'),
-              '${store.harvest.fold<int>(0, (a, h) => a + h.n)}'
+              '${cycleHarvest.fold<int>(0, (a, h) => a + h.n)}'
             ],
             [L('Fish remaining', 'Natitirang isda'), '${store.aliveCount}'],
             [
@@ -174,11 +175,11 @@ class FarmReport {
             ],
             [
               L('Total harvest weight', 'Kabuuang timbang ng harvest'),
-              '${store.harvest.fold<double>(0, (a, h) => a + h.kg).toStringAsFixed(1)} kg'
+              '${cycleHarvest.fold<double>(0, (a, h) => a + h.kg).toStringAsFixed(1)} kg'
             ],
             [
               L('Total harvest value', 'Kabuuang halaga ng harvest'),
-              peso(store.harvest.fold<double>(0, (a, h) => a + h.value))
+              peso(cycleHarvest.fold<double>(0, (a, h) => a + h.value))
             ],
           ]),
     ]);

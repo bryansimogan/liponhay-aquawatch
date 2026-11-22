@@ -1,7 +1,7 @@
 name: fish_farm_app
 description: "IoT-Enabled Fish Farm System for Water Quality Monitoring, Alert Notification and Corrective Action Support - Liponhay Fish Farm"
 publish_to: 'none'
-version: 1.6.0+7
+version: 1.6.1+8
 
 environment:
   sdk: ^3.4.0
