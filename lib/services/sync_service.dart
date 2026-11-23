@@ -1,243 +1,285 @@
 import 'dart:async';
-import 'package:flutter/widgets.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:firebase_database/firebase_database.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
-/// Requires the phone's database link AND advancing, recent ESP32 readings.
-/// Neither a network interface nor a cached Firebase event proves device life.
+import 'package:firebase_database/firebase_database.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
+
+import '../models/sensor_data.dart';
+import 'firebase_service.dart';
+import 'offline_cache_service.dart';
+
+/// Observes the phone's internet, the database session and the pond separately.
 class SyncService with WidgetsBindingObserver {
   SyncService({DateTime Function()? clock}) : _clock = clock ?? DateTime.now;
   static final SyncService instance = SyncService();
-  static const deviceStaleAfter = Duration(seconds: 60);
-  static const _maxDeviceClockLead = Duration(minutes: 5);
-  static const _lastSyncedKey = 'last_synced_at';
-  static final _minPlausibleMs = DateTime.utc(2020).millisecondsSinceEpoch;
+  static const deviceStaleAfter = Duration(minutes: 2);
+  static const _maxClockLead = Duration(minutes: 5);
+  static const _internetChannel = MethodChannel('aquawatch/internet');
   final DateTime Function() _clock;
+  final phoneOnline = ValueNotifier<bool?>(null);
+  final serverOnline = ValueNotifier<bool?>(null);
   final online = ValueNotifier<bool>(false);
-  final phoneOnline = ValueNotifier<bool>(false);
   final lastSynced = ValueNotifier<DateTime?>(null);
-  StreamSubscription<bool>? _connSub;
-  StreamSubscription<bool>? _networkSub;
-  StreamSubscription<Duration>? _serverTimeSub;
-  StreamSubscription<int?>? _deviceSub;
-  Timer? _staleCheck;
-  bool _started = false;
-  bool _firebaseConnected = false;
-  bool? _networkAvailable;
-  bool _observingLifecycle = false;
-  int _generation = 0;
-  int _networkRevision = 0;
-  int _lastDeviceTimestampMs = 0;
-  DateTime? _lastDeviceContact;
-  Duration _serverTimeOffset = Duration.zero;
-  DateTime get _serverNow => _clock().add(_serverTimeOffset);
+  final latestReading = ValueNotifier<SensorData?>(null);
+  final receivedReading = ValueNotifier<SensorData?>(null);
+  final recentHistory = ValueNotifier<List<SensorData>>(const []);
+  final ageLabel = ValueNotifier<String>('never');
 
-  /// Streams can be supplied for deterministic connection/freshness tests.
+  StreamSubscription<bool>? _connection;
+  StreamSubscription<bool>? _network;
+  StreamSubscription<Duration>? _offsets;
+  StreamSubscription<SensorData?>? _current;
+  StreamSubscription<List<SensorData>>? _history;
+  Timer? _tick;
+  Timer? _serverGrace;
+  Timer? _retry;
+  bool _started = false;
+  bool _hasSession = false;
+  bool _checkingInternet = false;
+  int _internetMisses = 0;
+  int _ticks = 0;
+  int _generation = 0;
+  bool _production = false;
+  Duration _offset = Duration.zero;
+  int? _confirmedTimestamp;
+  DateTime? _confirmedAt;
+  DateTime? _confirmedServerAt;
+  SensorData? _pendingCurrent;
+  List<SensorData> _pendingHistory = const [];
+  DateTime get serverNow => _clock().add(_offset);
+
   Future<void> start({
     Stream<bool>? connections,
-    Stream<bool>? networkAvailability,
-    Stream<int?>? deviceTimestamps,
+    Stream<bool>? internetChecks,
     Stream<Duration>? serverTimeOffsets,
+    Stream<SensorData?> Function()? currentReadings,
+    Stream<List<SensorData>> Function()? historyReadings,
   }) async {
     if (_started) return;
     _started = true;
     final generation = ++_generation;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final cached = prefs.getInt(_lastSyncedKey);
+    _production = connections == null;
+    final database = _production ? FirebaseDatabase.instance : null;
+    final firebase = FirebaseService();
+    if (_production) {
+      final cached = await OfflineCacheService.current('pond1');
       if (!_started || generation != _generation) return;
-      if (cached != null &&
-          _plausible(cached) &&
-          cached > (lastSynced.value?.millisecondsSinceEpoch ?? 0)) {
-        lastSynced.value = DateTime.fromMillisecondsSinceEpoch(cached);
-        _lastDeviceTimestampMs = cached;
+      if (cached != null && _plausible(cached.timestamp)) {
+        latestReading.value = cached;
+        lastSynced.value = cached.dateTime;
       }
-    } catch (_) {/* Cache must never prevent connection tracking. */}
-    if (!_started || generation != _generation) return;
-
-    final database = connections == null ? FirebaseDatabase.instance : null;
-    final network = networkAvailability ??
-        Connectivity().onConnectivityChanged.map(_hasNetwork);
-    _networkSub = network.listen((available) {
-      _networkRevision++;
-      _networkAvailable = available;
-      if (!available) invalidateDevice();
-      _recompute();
-    }, onError: (_) {
-      _networkRevision++;
-      _recompute();
-    });
-    _connSub = (connections ??
-            database!
-                .ref('.info/connected')
-                .onValue
-                .map((event) => event.snapshot.value == true))
-        .listen((connected) {
-      _firebaseConnected = connected;
-      if (!connected) invalidateDevice();
-      _recompute();
-    }, onError: (_) {
-      _firebaseConnected = false;
-      invalidateDevice();
-    });
-    _serverTimeSub = (serverTimeOffsets ??
+      WidgetsBinding.instance.addObserver(this);
+      unawaited(_checkInternet());
+    }
+    _network = internetChecks?.listen(_internetResult, onError: (Object _) {});
+    _offsets = (serverTimeOffsets ??
             database?.ref('.info/serverTimeOffset').onValue.map((event) =>
                 Duration(
                     milliseconds:
                         (event.snapshot.value as num?)?.toInt() ?? 0)))
         ?.listen((offset) {
-      _serverTimeOffset = offset;
-      _recompute();
+      _offset = offset;
+      _acceptHistory();
+      final reading = _pendingCurrent;
+      if (reading != null) _receive(reading);
+      refresh();
     }, onError: (Object _) {});
-    // Watch the timestamp directly, even while another tab is open. Sensor
-    // validation and disk writes on the reading stream cannot delay presence.
-    _deviceSub = (deviceTimestamps ??
-            database?.ref('ponds/pond1/current/timestamp').onValue.map((event) {
-              final value = event.snapshot.value;
-              return value is num && value.isFinite ? value.toInt() : null;
-            }))
-        ?.listen((timestamp) {
-      if (timestamp == null) {
-        invalidateDevice();
-      } else {
-        markDeviceSeen(timestamp);
+
+    final current = currentReadings ??
+        (_production ? () => firebase.currentReadingStream('pond1') : null);
+    final history = historyReadings ??
+        (_production
+            ? () => firebase.recentHardwareHistoryStream('pond1')
+            : null);
+
+    void subscribe() {
+      if (!_started || generation != _generation) return;
+      void retry() {
+        if (!_started || generation != _generation || _retry?.isActive == true)
+          return;
+        _retry = Timer(const Duration(seconds: 5), subscribe);
       }
-    }, onError: (Object _) => invalidateDevice(), onDone: invalidateDevice);
-    if (networkAvailability == null) {
-      WidgetsBinding.instance.addObserver(this);
-      _observingLifecycle = true;
-      unawaited(_checkNetwork(generation));
+
+      unawaited(_current?.cancel());
+      unawaited(_history?.cancel());
+      _current = current?.call().listen((reading) {
+        if (reading != null) {
+          _pendingCurrent = reading;
+          _receive(reading);
+        }
+      }, onError: (Object _) => retry(), onDone: retry);
+      _history = history?.call().listen((readings) {
+        _pendingHistory = readings;
+        _acceptHistory();
+      }, onError: (Object _) => retry(), onDone: retry);
     }
-    _staleCheck = Timer.periodic(const Duration(seconds: 1), (_) => refresh());
-    _recompute();
+
+    _connection = (connections ??
+            database!
+                .ref('.info/connected')
+                .onValue
+                .map((e) => e.snapshot.value == true))
+        .listen((connected) {
+      _hasSession = connected;
+      _serverGrace?.cancel();
+      if (connected) {
+        serverOnline.value = true;
+        if (_retry?.isActive == true) {
+          _retry!.cancel();
+          subscribe();
+        }
+        // A snapshot can arrive immediately before Firebase announces its session.
+        final reading = latestReading.value;
+        if (reading != null && _seenOnStream == reading.timestamp) {
+          _confirm(reading.timestamp);
+          receivedReading.value = reading;
+        }
+        _acceptHistory();
+        if (_production) unawaited(_checkInternet());
+      } else {
+        _serverGrace = Timer(const Duration(seconds: 5), () {
+          serverOnline.value = false;
+        });
+      }
+      refresh();
+    }, onError: (Object _) {
+      // Keep the previous status until the SDK reports the connection state.
+    });
+
+    subscribe();
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_production && ++_ticks % 5 == 0) unawaited(_checkInternet());
+      refresh();
+    });
+    refresh();
   }
 
-  static bool _hasNetwork(List<ConnectivityResult> results) =>
-      results.any((value) => value != ConnectivityResult.none);
+  int? _seenOnStream;
 
-  Future<void> _checkNetwork(int generation) async {
-    final revision = ++_networkRevision;
-    try {
-      final results = await Connectivity().checkConnectivity();
-      if (!_started ||
-          generation != _generation ||
-          revision != _networkRevision) {
-        return;
+  void _acceptHistory() {
+    final valid =
+        _pendingHistory.where((r) => _plausible(r.timestamp)).toList();
+    if (valid.isNotEmpty) _receive(valid.last);
+    if (_hasSession) recentHistory.value = valid;
+  }
+
+  void _receive(SensorData reading) {
+    if (!_plausible(reading.timestamp)) return;
+    final previous = latestReading.value;
+    if (previous != null &&
+        _plausible(previous.timestamp) &&
+        reading.timestamp < previous.timestamp &&
+        !(previous.timestamp > serverNow.millisecondsSinceEpoch &&
+            _seenOnStream == null)) return;
+
+    _seenOnStream = reading.timestamp;
+    if (_hasSession) _confirm(reading.timestamp);
+    if (previous?.timestamp != reading.timestamp ||
+        receivedReading.value == null) {
+      lastSynced.value = reading.dateTime;
+      latestReading.value = reading;
+      if (_production) {
+        unawaited(OfflineCacheService.saveCurrent('pond1', reading)
+            .catchError((Object _) {}));
       }
-      _networkAvailable = _hasNetwork(results);
-    } catch (_) {
-      if (!_started ||
-          generation != _generation ||
-          revision != _networkRevision) {
-        return;
-      }
-      // Keep the previous network observation. Firebase still reports
-      // whether the database is reachable if the platform check fails.
     }
-    if (_networkAvailable == false) invalidateDevice();
-    _recompute();
+    if (_hasSession) receivedReading.value = latestReading.value;
+    refresh();
+  }
+
+  void _confirm(int timestamp) {
+    if (timestamp == _confirmedTimestamp) return;
+    _confirmedTimestamp = timestamp;
+    _confirmedAt = _clock();
+    _confirmedServerAt = serverNow;
+  }
+
+  bool _plausible(int timestamp) =>
+      timestamp >= SensorData.minEpochMilliseconds &&
+      timestamp <= serverNow.add(_maxClockLead).millisecondsSinceEpoch;
+
+  void _internetResult(bool reachable) {
+    if (reachable) {
+      _internetMisses = 0;
+      phoneOnline.value = true;
+    } else if (++_internetMisses >= 2) {
+      phoneOnline.value = false;
+    }
+  }
+
+  Future<void> _checkInternet() async {
+    if (_checkingInternet) return;
+    _checkingInternet = true;
+    final generation = _generation;
+    try {
+      final reachable =
+          await _internetChannel.invokeMethod<bool>('isValidated');
+      if (_started && generation == _generation && reachable != null) {
+        _internetResult(reachable);
+      }
+    } on PlatformException {
+      // A failed check does not establish that the phone is offline.
+    } on MissingPluginException {
+      // Firebase session status remains available on platforms without this probe.
+    } finally {
+      _checkingInternet = false;
+    }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && _started) {
-      // Android can suspend connectivity broadcasts in the background.
-      _recompute();
-      unawaited(_checkNetwork(_generation));
+      refresh();
+      unawaited(_checkInternet());
     }
   }
 
-  bool _plausible(int timestamp) =>
-      timestamp >= _minPlausibleMs &&
-      timestamp <= _serverNow.add(_maxDeviceClockLead).millisecondsSinceEpoch;
-
-  void markDeviceSeen(int timestamp) {
-    if (!_plausible(timestamp)) {
-      invalidateDevice();
-      return;
-    }
-    if (timestamp == _lastDeviceTimestampMs) return;
-    final seen = DateTime.fromMillisecondsSinceEpoch(timestamp);
-    final age = _serverNow.difference(seen);
-    final previous = lastSynced.value;
-    if (timestamp < _lastDeviceTimestampMs &&
-        (age >= deviceStaleAfter ||
-            (previous != null &&
-                _plausible(_lastDeviceTimestampMs) &&
-                !_serverNow.isAfter(previous.add(deviceStaleAfter))))) {
-      return;
-    }
-    _lastDeviceTimestampMs = timestamp;
-    lastSynced.value = seen;
-    unawaited(SharedPreferences.getInstance()
-        .then((prefs) => prefs.setInt(_lastSyncedKey, timestamp))
-        .catchError((_) => false));
-    // Connection and data events can arrive in either order on reconnect.
-    // Retain fresh evidence and let the combined status gate its display.
-    _lastDeviceContact = age < deviceStaleAfter ? _clock() : null;
-    _recompute();
+  void refresh() {
+    final last = lastSynced.value;
+    final time = _confirmedAt;
+    final receivedAt = _confirmedServerAt;
+    final observed = last != null &&
+            receivedAt != null &&
+            _confirmedTimestamp == last.millisecondsSinceEpoch &&
+            last.isAfter(receivedAt)
+        ? receivedAt
+        : last;
+    ageLabel.value = relativeLabel(observed, now: serverNow);
+    online.value = last != null &&
+        last.millisecondsSinceEpoch == _confirmedTimestamp &&
+        _plausible(last.millisecondsSinceEpoch) &&
+        serverNow.difference(last) < deviceStaleAfter &&
+        time != null &&
+        !_clock().difference(time).isNegative &&
+        _clock().difference(time) < deviceStaleAfter;
   }
 
-  void invalidateDevice() {
-    _lastDeviceContact = null;
-    _recompute();
-  }
-
-  /// Also used when resuming and by tests that advance the injected clock.
-  void refresh() => _recompute();
-
-  void _recompute() {
-    final connected = _networkAvailable != false && _firebaseConnected;
-    final now = _clock();
-    final contact = _lastDeviceContact;
-    final sample = lastSynced.value;
-    final fresh = contact != null &&
-        sample != null &&
-        !now.difference(contact).isNegative &&
-        now.difference(contact) < deviceStaleAfter &&
-        _serverNow.difference(sample) < deviceStaleAfter &&
-        _plausible(sample.millisecondsSinceEpoch);
-    // Clear device first so no intermediate UI rebuild can claim a sync.
-    online.value = connected && fresh;
-    phoneOnline.value = connected;
+  static String relativeLabel(DateTime? time, {DateTime? now}) {
+    if (time == null) return 'never';
+    final age = (now ?? DateTime.now()).difference(time);
+    if (age.inSeconds < 5) return 'just now';
+    if (age.inSeconds < 60) return '${age.inSeconds} s ago';
+    if (age.inMinutes < 60) {
+      return '${age.inMinutes} ${age.inMinutes == 1 ? 'min' : 'mins'} ago';
+    }
+    if (age.inHours < 24) {
+      return '${age.inHours} ${age.inHours == 1 ? 'hour' : 'hours'} ago';
+    }
+    if (age.inDays > 365) return 'over a year ago';
+    return '${age.inDays} ${age.inDays == 1 ? 'day' : 'days'} ago';
   }
 
   void dispose() {
     _started = false;
     _generation++;
-    unawaited(_connSub?.cancel());
-    unawaited(_networkSub?.cancel());
-    unawaited(_serverTimeSub?.cancel());
-    unawaited(_deviceSub?.cancel());
-    _staleCheck?.cancel();
-    if (_observingLifecycle) WidgetsBinding.instance.removeObserver(this);
-    _observingLifecycle = false;
-    _firebaseConnected = false;
-    _networkAvailable = null;
-    invalidateDevice();
-  }
-
-  /// "just now", "12 mins ago", "3 hours ago", "2 days ago".
-  static String relativeLabel(DateTime? time) {
-    if (time == null) return 'never';
-    final diff = DateTime.now().difference(time);
-    // A device or phone clock that is slightly ahead makes the difference
-    // negative; that is still "just now", never a negative age.
-    if (diff.isNegative) return 'just now';
-    // A defensive cap: with the timestamp guards above this should never fire,
-    // but no path can ever print "27000 days ago" again.
-    if (diff.inDays > 365) return 'over a year ago';
-    if (diff.inSeconds < 45) return 'just now';
-    if (diff.inMinutes < 60) {
-      final m = diff.inMinutes.clamp(1, 59);
-      return '$m ${m == 1 ? "min" : "mins"} ago';
-    }
-    if (diff.inHours < 24) {
-      final h = diff.inHours;
-      return '$h ${h == 1 ? "hour" : "hours"} ago';
-    }
-    final d = diff.inDays;
-    return '$d ${d == 1 ? "day" : "days"} ago';
+    _tick?.cancel();
+    _serverGrace?.cancel();
+    _retry?.cancel();
+    unawaited(_connection?.cancel());
+    unawaited(_network?.cancel());
+    unawaited(_offsets?.cancel());
+    unawaited(_current?.cancel());
+    unawaited(_history?.cancel());
+    if (_production) WidgetsBinding.instance.removeObserver(this);
   }
 }

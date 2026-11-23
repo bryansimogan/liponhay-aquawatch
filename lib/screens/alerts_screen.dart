@@ -1,15 +1,11 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:provider/provider.dart';
 import '../app_theme.dart';
 import '../models/alert_content.dart';
 import '../models/alert_record.dart';
 import '../models/water_quality.dart';
-import '../services/alert_count_service.dart';
-import '../services/firebase_service.dart';
-import '../services/app_store.dart';
+import '../services/notification_service.dart';
+import '../services/water_alert_feed.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/app_header.dart';
 import '../widgets/expandable_notice.dart';
@@ -17,7 +13,7 @@ import '../widgets/loading_emblem.dart';
 import '../widgets/paged_list.dart';
 import '../widgets/reveal.dart';
 
-/// Saved record of every SMS alert the system has sent.
+/// Saved record of measured warning and critical readings.
 class AlertsScreen extends StatefulWidget {
   const AlertsScreen({super.key});
 
@@ -26,94 +22,36 @@ class AlertsScreen extends StatefulWidget {
 }
 
 class _AlertsScreenState extends State<AlertsScreen> {
-  final FirebaseService _firebase = FirebaseService();
-  AppStore? _demo;
-  int _demoClearedAt = 0;
-  int _demoReadAt = 0;
-
-  StreamSubscription<List<AlertRecord>>? _subscription;
-  List<AlertRecord> _alerts = [];
+  final _feed = WaterAlertFeed.instance;
+  List<AlertRecord> get _alerts => _feed.items.value;
   bool _loading = true;
-
-  /// Who the SMS alerts go to, shown in the detail sheet. Fetched once.
-  String _recipient = '';
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _feed.items.addListener(_refresh);
+    NotificationService.instance.items.addListener(_refresh);
+    _feed.start().whenComplete(() {
+      if (mounted) setState(() => _loading = false);
+    });
+  }
+
+  void _refresh() {
+    if (mounted) setState(() => _loading = false);
   }
 
   @override
   void dispose() {
-    _subscription?.cancel();
-    _demo?.removeListener(_refreshDemo);
+    _feed.items.removeListener(_refresh);
+    NotificationService.instance.items.removeListener(_refresh);
     super.dispose();
-  }
-
-  Future<void> _load() async {
-    final store = context.read<AppStore>();
-    if (store.simulation) {
-      _demo = store;
-      store.addListener(_refreshDemo);
-      _refreshDemo();
-      return;
-    }
-
-    _firebase.getSmsRecipient().then((n) {
-      if (mounted) setState(() => _recipient = n);
-    }).catchError((_) {});
-
-    try {
-      _subscription = _firebase.alertsStream().listen((list) {
-        if (mounted) {
-          setState(() {
-            _alerts = list;
-            _loading = false;
-          });
-        }
-      }, onError: (_) {
-        if (mounted) setState(() => _loading = false);
-      });
-    } catch (_) {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  void _refreshDemo() {
-    final store = _demo!;
-    setState(() {
-      _loading = false;
-      _alerts = [
-        for (final incident in store.incidents)
-          if (incident.ts > _demoClearedAt)
-            AlertRecord(
-              id: 'demo-${incident.id}',
-              parameter: switch (incident.p) {
-                'ph' => 'pH',
-                't' => 'temperature',
-                _ => 'dissolved_oxygen',
-              },
-              value: double.tryParse(incident.val.split(' ').first) ?? 0,
-              severity: incident.lvl == 'crit' ? 'critical' : 'warning',
-              condition: incident.title,
-              timestamp: incident.ts,
-              pondId: 'pond1',
-            ),
-      ];
-    });
   }
 
   int get _criticalCount =>
       _alerts.where((a) => a.severity == 'critical').length;
 
   Future<void> _markAllRead() async {
-    if (_demo case final store?) {
-      _demoReadAt = store.nowMs;
-    } else {
-      await AlertCountService.instance.markAllRead();
-    }
-    if (mounted) setState(() {}); // refresh the per-row unread dots
+    await NotificationService.instance.markAlertsRead();
     _toast('All alerts marked as read.');
   }
 
@@ -144,13 +82,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
 
     if (!mounted) return;
     try {
-      if (_demo case final store?) {
-        _demoClearedAt = store.nowMs;
-        _refreshDemo();
-      } else {
-        await _firebase.clearAllAlerts();
-        // The stream delivers the empty list, which also zeroes the badge.
-      }
+      await _feed.clear();
       _toast('Alerts cleared.');
     } catch (_) {
       _toast('Could not clear alerts. Please try again.');
@@ -192,9 +124,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
                                 ),
                                 const SizedBox(height: 3),
                                 Text(
-                                  _demo == null
-                                      ? 'SMS alert history'
-                                      : 'Demo Mode · simulated alerts',
+                                  'Water quality alert history',
                                   style: TextStyle(
                                     fontSize: 12,
                                     height: 1.35,
@@ -364,9 +294,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
   Widget _alertCard(AlertRecord alert) {
     final palette = AppTheme.of(context);
     final color = palette.statusColor(alert.severity);
-    final unit = _unitFor(alert.parameter);
     final pond = Pond.byId(alert.pondId).name;
-    final reading = alert.value.toStringAsFixed(2);
     return ExpandableNotice(
       key: ValueKey(alert.id),
       title: _prettyParam(alert.parameter),
@@ -375,18 +303,19 @@ class _AlertsScreenState extends State<AlertsScreen> {
           : 'Time unknown',
       icon: Icons.warning_amber_rounded,
       accent: color,
-      unread: _demo == null
-          ? AlertCountService.instance.isUnread(alert)
-          : alert.timestamp > _demoReadAt,
+      unread: NotificationService.instance.isAlertUnread(alert),
+      onExpansionChanged: (expanded) {
+        if (expanded) NotificationService.instance.markRead(alert.id);
+      },
       details: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '$pond · $reading$unit',
+            '$pond · ${alert.formattedValue}',
             style: TextStyle(color: palette.ink, fontSize: 12),
           ),
           Text(
-            alert.condition.isEmpty ? alert.severity : alert.condition,
+            '${alert.severityLabel} · ${alert.condition}',
             style: TextStyle(color: color, fontSize: 12),
           ),
           TextButton(
@@ -399,8 +328,8 @@ class _AlertsScreenState extends State<AlertsScreen> {
   }
 
   /// The full plain-language breakdown of one alert — what happened, why, what
-  /// it leads to, what to do — plus who the SMS reached. This is the same
-  /// content the SMS carries, kept in one place ([AlertContent]).
+  /// it leads to, what to do — using the same reading as the dashboard. This is the same
+  /// guidance used for the measured condition, kept in [AlertContent].
   void _showDetail(AlertRecord a) {
     final color = AppTheme.of(context).statusColor(a.severity);
     final param = _paramOf(a.parameter);
@@ -488,16 +417,14 @@ class _AlertsScreenState extends State<AlertsScreen> {
             const SizedBox(height: 8),
             Divider(color: AppTheme.of(context).border),
             const SizedBox(height: 8),
-            _metaRow('Reading',
-                '${a.value.toStringAsFixed(2)}${_unitFor(a.parameter)}'),
+            _metaRow('Reading', a.formattedValue),
+            _metaRow('Condition', a.condition),
             _metaRow('Pond', Pond.byId(a.pondId).name),
             _metaRow(
                 'Time',
                 a.hasKnownTime
                     ? DateFormat('MMM d, yyyy · h:mm a').format(a.dateTime)
                     : 'Unknown'),
-            _metaRow('SMS', _demo == null ? 'Sent' : 'Simulated'),
-            if (_recipient.isNotEmpty) _metaRow('Sent to', _recipient),
           ],
         ),
       ),

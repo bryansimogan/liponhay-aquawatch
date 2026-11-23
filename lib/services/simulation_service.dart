@@ -1,9 +1,6 @@
 import 'dart:async';
 import 'dart:math';
 import '../models/sensor_data.dart';
-import '../models/mortality_record.dart';
-import '../models/alert_record.dart';
-import '../models/water_quality.dart';
 
 /// Generates realistic simulated sensor data for testing WITHOUT real hardware.
 ///
@@ -30,9 +27,9 @@ class SimulationService {
     int intervalMs = 5000,
   }) {
     _controller = StreamController<SensorData>.broadcast();
-    _ph = 7.0 + _rng.nextDouble() * 1.0;   // 7.0 - 8.0
+    _ph = 7.0 + _rng.nextDouble() * 1.0; // 7.0 - 8.0
     _temp = 26.0 + _rng.nextDouble() * 4.0; // 26 - 30
-    _do = 5.5 + _rng.nextDouble() * 2.5;    // 5.5 - 8.0
+    _do = 5.5 + _rng.nextDouble() * 2.5; // 5.5 - 8.0
 
     _timer = Timer.periodic(Duration(milliseconds: intervalMs), (_) {
       _updateValues();
@@ -71,10 +68,14 @@ class SimulationService {
         final spikeParam = _rng.nextInt(3);
         switch (spikeParam) {
           case 0: // pH spike
-            _ph += _rng.nextBool() ? _rng.nextDouble() * 3 : -_rng.nextDouble() * 3;
+            _ph += _rng.nextBool()
+                ? _rng.nextDouble() * 3
+                : -_rng.nextDouble() * 3;
             break;
           case 1: // Temperature spike
-            _temp += _rng.nextBool() ? _rng.nextDouble() * 6 : -_rng.nextDouble() * 6;
+            _temp += _rng.nextBool()
+                ? _rng.nextDouble() * 6
+                : -_rng.nextDouble() * 6;
             break;
           case 2: // DO spike (downward)
             _do -= _rng.nextDouble() * 4;
@@ -116,72 +117,6 @@ class SimulationService {
       history.add(data);
     }
     return history;
-  }
-
-  /// Generate sample mortality records for demo.
-  List<MortalityRecord> generateMortalityRecords(String pondId,
-      {int count = 4}) {
-    final now = DateTime.now();
-    const notes = [
-      'Found near aerator, low DO recorded that morning',
-      'Noticed during morning feeding',
-      '',
-      'Water looked cloudy the day before',
-      '',
-    ];
-    final List<MortalityRecord> records = [];
-    for (int i = 0; i < count; i++) {
-      final date = now.subtract(Duration(days: i * 3 + 1));
-      records.add(MortalityRecord(
-        id: 'sim_mort_$i',
-        date: '${date.year}-${date.month.toString().padLeft(2, '0')}'
-            '-${date.day.toString().padLeft(2, '0')}',
-        pondId: pondId,
-        species: MortalityRecord.speciesForPond(pondId),
-        count: _rng.nextInt(6) + 1,
-        possibleCause:
-            MortalityCause.options[_rng.nextInt(MortalityCause.options.length)],
-        notes: notes[_rng.nextInt(notes.length)],
-        timestamp: date.millisecondsSinceEpoch,
-      ));
-    }
-    return records;
-  }
-
-  /// Generate sample alert records for demo.
-  List<AlertRecord> generateAlerts({int count = 8}) {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final params = ['pH', 'temperature', 'dissolved_oxygen'];
-    final conditions = [
-      'Strongly Acidic', 'Acidic', 'Alkaline', 'Strongly Alkaline',
-      'Cold stress', 'Warm stress', 'Too hot',
-      'Severe depletion', 'Low oxygen',
-    ];
-    final List<AlertRecord> alerts = [];
-    for (int i = 0; i < count; i++) {
-      final param = params[i % params.length];
-      double val;
-      switch (param) {
-        case 'pH':
-          val = i % 2 == 0 ? 3.5 + _rng.nextDouble() : 9.5 + _rng.nextDouble();
-          break;
-        case 'temperature':
-          val = i % 2 == 0 ? 15.0 + _rng.nextDouble() * 5 : 36.0 + _rng.nextDouble() * 4;
-          break;
-        default:
-          val = 1.0 + _rng.nextDouble() * 2;
-      }
-      alerts.add(AlertRecord(
-        id: 'sim_alert_$i',
-        parameter: param,
-        value: double.parse(val.toStringAsFixed(2)),
-        severity: i % 3 == 0 ? 'critical' : 'warning',
-        condition: conditions[i % conditions.length],
-        timestamp: now - (i * 600000), // 10 min apart
-        pondId: 'pond${(i % 3) + 1}',
-      ));
-    }
-    return alerts;
   }
 
   void stop() {

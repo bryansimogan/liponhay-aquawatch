@@ -119,7 +119,7 @@ class NotificationsScreen extends StatelessWidget {
         ),
       (false, AppNotificationType.alert) => (
           Icons.error_outline_rounded,
-          palette.coral,
+          palette.statusColor(item.severity ?? 'critical'),
           L('Open Alerts', 'Buksan ang Mga Alerto'),
           const AlertsScreen(),
         ),
@@ -136,7 +136,11 @@ class NotificationsScreen extends StatelessWidget {
       title: item.localizedTitle,
       timestamp: item.timestamp > 0
           ? DateFormat.MMMd(appDateLocale).add_jm().format(
-                DateTime.fromMillisecondsSinceEpoch(item.timestamp),
+                item.type == AppNotificationType.alert && !store.simulation
+                    ? DateTime.fromMillisecondsSinceEpoch(item.timestamp,
+                            isUtc: true)
+                        .add(const Duration(hours: 8))
+                    : DateTime.fromMillisecondsSinceEpoch(item.timestamp),
               )
           : L('Time unavailable', 'Walang oras na nakatala'),
       icon: icon,

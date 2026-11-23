@@ -123,6 +123,7 @@ class AppStore extends ChangeNotifier {
   Timer? _tick;
   Timer? _readingExpiry;
   StreamSubscription<SensorData?>? _liveReadings;
+  SyncService? _telemetry;
   int _lastTimestamp = 0;
   bool _readingFresh = false;
   bool get hasCurrentReading => simulation || _readingFresh;
@@ -157,7 +158,7 @@ class AppStore extends ChangeNotifier {
 
   /// Starts after the live app has opened its Firebase session.
   void connectLive({Stream<SensorData?>? readings}) {
-    if (simulation || _liveReadings != null) return;
+    if (simulation || _liveReadings != null || _telemetry != null) return;
     if (readings == null) {
       final firebase = FirebaseService();
       _stockingSubscription = firebase.stockingStream('pond1').listen((value) {
@@ -185,31 +186,30 @@ class AppStore extends ChangeNotifier {
             (records) => replaceMortalityRecords('pond1', records),
             onError: (Object _) {},
           );
+      _telemetry = SyncService.instance;
+      _telemetry!.receivedReading.addListener(_receiveTelemetry);
+      _receiveTelemetry();
+    } else {
+      _liveReadings = readings.listen(_onLiveReading, onError: (Object _) {});
     }
-    final stream = readings ?? FirebaseService().currentReadingStream('pond1');
-    _liveReadings = stream.listen(
-      _onLiveReading,
-      onError: (Object _) => _onLiveReading(null),
-    );
   }
 
+  void _receiveTelemetry() => _onLiveReading(_telemetry?.receivedReading.value);
+
   void _onLiveReading(SensorData? reading) {
-    if (reading == null) {
-      _expireReading();
-      return;
-    }
-    final now = _clock();
+    if (reading == null) return;
+    final now = _telemetry?.serverNow ?? _clock();
     final maxAge = SyncService.deviceStaleAfter;
     final age = now.difference(reading.dateTime);
     if (reading.timestamp <= _lastTimestamp ||
-        reading.timestamp < _management.lastReadingAt ||
         age > maxAge ||
         age < const Duration(minutes: -5)) {
       return;
     }
 
     if (_lastTimestamp > 0 &&
-        reading.timestamp - _lastTimestamp > maxAge.inMilliseconds) {
+        reading.timestamp - _lastTimestamp >
+            ManagementLogs.maxVerificationGap.inMilliseconds) {
       _resetVerification();
     }
     _lastTimestamp = reading.timestamp;
@@ -248,6 +248,8 @@ class AppStore extends ChangeNotifier {
   }
 
   void stopReadings() {
+    _telemetry?.receivedReading.removeListener(_receiveTelemetry);
+    _telemetry = null;
     _tick?.cancel();
     _scenario?.cancel();
     _readingExpiry?.cancel();
@@ -265,6 +267,7 @@ class AppStore extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _telemetry?.receivedReading.removeListener(_receiveTelemetry);
     _managementSubscription?.cancel();
     _mortalitySubscription?.cancel();
     _stockingSubscription?.cancel();
@@ -426,11 +429,12 @@ class AppStore extends ChangeNotifier {
 
   void _checkReadings(int sampledAt) {
     final previous = {
-      for (final i in incidents) i.id: Incident.fromMap(i.toMap()),
+      if (simulation)
+        for (final i in incidents) i.id: Incident.fromMap(i.toMap()),
     };
     _replaceIncidents(
         _management.receive(currentReading, allowDemoTimeJump: simulation));
-    for (final incident in incidents) {
+    for (final incident in simulation ? incidents : const <Incident>[]) {
       final before = previous[incident.id];
       if (before == null) {
         _note(AppNotificationType.alert, incident.title,
@@ -579,7 +583,7 @@ class AppStore extends ChangeNotifier {
         'inc': incidents.map((i) => i.toMap()).toList(),
         'management_last_reading_at': _management.lastReadingAt,
         'harv': harvest.map((h) => h.toMap()).toList(),
-        'mort': mortality.map((m) => m.toMap()).toList(),
+        if (simulation) 'mort': mortality.map((m) => m.toMap()).toList(),
         'notes': notes.map((n) => n.toMap()).toList(),
         'stock': stock.toMap(),
         'promo': promo.toMap(),
@@ -611,10 +615,12 @@ class AppStore extends ChangeNotifier {
           incidents: incidents,
           lastReadingAt:
               (m['management_last_reading_at'] as num?)?.toInt() ?? 0);
-      mortality
-        ..clear()
-        ..addAll(
-            ((m['mort'] as List?) ?? []).map((e) => MortLog.fromMap(e as Map)));
+      if (simulation) {
+        mortality
+          ..clear()
+          ..addAll(((m['mort'] as List?) ?? [])
+              .map((e) => MortLog.fromMap(e as Map)));
+      }
       notes
         ..clear()
         ..addAll(((m['notes'] as List?) ?? [])
@@ -631,7 +637,10 @@ class AppStore extends ChangeNotifier {
       ..clear()
       ..addAll(((data['harv'] as List?) ?? [])
           .map((entry) => HarvestRecord.fromMap(entry as Map)));
-    if (data['stock'] != null) stock = Stocking.fromMap(data['stock'] as Map);
+    if (data['stock'] case final Map saved) {
+      final value = Stocking.tryFromMap(saved);
+      if (value != null) stock = value;
+    }
   }
 
   /// First-run seed so the response centre and reports are not empty.

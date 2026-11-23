@@ -9,6 +9,7 @@ import '../models/app_notification.dart';
 import '../models/gsm_config.dart';
 import '../models/sensor_data.dart';
 import 'firebase_service.dart';
+import 'water_alert_feed.dart';
 
 /// In-app notification inbox for new History records, Alerts, and SIM promo
 /// expiration reminders.
@@ -18,7 +19,6 @@ class NotificationService {
 
   static const _itemsKey = 'app_notifications_v1';
   static const _historyCursorKey = 'notification_history_cursor_v1';
-  static const _alertCursorKey = 'notification_alert_cursor_v1';
 
   final ValueNotifier<List<AppNotification>> items =
       ValueNotifier<List<AppNotification>>(const []);
@@ -26,29 +26,27 @@ class NotificationService {
 
   FirebaseService? _firebase;
   StreamSubscription<SensorData>? _historySub;
-  StreamSubscription<List<AlertRecord>>? _alertSub;
+  final _alertFeed = WaterAlertFeed.instance;
   StreamSubscription<GsmConfig>? _gsmSub;
   Timer? _promoTimer;
+  Timer? _saveTimer;
   GsmConfig _gsm = const GsmConfig();
   bool _started = false;
   int _historyCursor = 0;
-  int _alertCursor = 0;
 
-  Future<void> start({required bool simMode}) async {
+  Future<void> start() async {
     if (_started) return;
     _started = true;
     await _restore();
-    if (simMode) return;
+    await _alertFeed.start();
 
     _firebase ??= FirebaseService();
     _historySub = _firebase!.latestHistoryStream('pond1').listen(
           _onHistory,
           onError: (_) {},
         );
-    _alertSub = _firebase!.alertsStream().listen(
-          _onAlerts,
-          onError: (_) {},
-        );
+    _alertFeed.items.addListener(_syncAlerts);
+    _syncAlerts();
     _gsmSub = _firebase!.gsmConfigStream().listen(
       (config) {
         _gsm = config;
@@ -98,6 +96,10 @@ class NotificationService {
     }
     if (reading.timestamp <= _historyCursor) return;
     _historyCursor = reading.timestamp;
+    if (reading.parameters.any((parameter) => !parameter.isSafe)) {
+      _persist();
+      return;
+    }
     _add(AppNotification(
       id: 'history-${reading.timestamp}',
       type: AppNotificationType.history,
@@ -109,48 +111,52 @@ class NotificationService {
     ));
   }
 
-  void _onAlerts(List<AlertRecord> alerts) {
-    if (alerts.isEmpty) return;
-    final newest =
-        alerts.map((a) => a.timestamp).reduce((a, b) => a > b ? a : b);
-    if (_alertCursor == 0) {
-      _alertCursor = newest;
-      _persist();
-      return;
-    }
-
-    final fresh = alerts.where((a) => a.timestamp > _alertCursor).toList()
-      ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
-    for (final alert in fresh) {
-      final parameter = switch (alert.parameter) {
-        'pH' => 'pH',
-        'temperature' => 'Temperature',
-        'dissolved_oxygen' => 'Dissolved oxygen',
-        _ => alert.parameter,
-      };
-      _add(
-          AppNotification(
-            id: 'alert-${alert.id}',
-            type: AppNotificationType.alert,
-            title:
-                '${alert.severity == "critical" ? "Critical" : "Warning"} alert · $parameter',
-            body: 'Pond 1 · ${alert.value.toStringAsFixed(2)}'
-                '${alert.condition.isEmpty ? "" : " · ${alert.condition}"}',
-            timestamp: alert.timestamp,
-          ),
-          persist: false);
-    }
-    _alertCursor = newest;
-    _publishAndPersist();
+  void _syncAlerts() {
+    final previous = {for (final item in items.value) item.id: item};
+    _publish([
+      ...items.value.where((item) => item.type != AppNotificationType.alert),
+      for (final alert in _alertFeed.items.value)
+        AppNotification.fromWaterAlert(
+          alert,
+          read: previous[alert.id]?.read ?? false,
+        ),
+    ]);
   }
 
-  void _add(AppNotification notification, {bool persist = true}) {
-    if (items.value.any((item) => item.id == notification.id)) return;
-    final next = [notification, ...items.value]
-      ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
-    items.value = next.take(100).toList(growable: false);
+  bool isAlertUnread(AlertRecord alert) =>
+      items.value.any((item) => item.id == alert.id && !item.read);
+
+  Future<void> markAlertsRead() async {
+    items.value = [
+      for (final item in items.value)
+        item.type == AppNotificationType.alert
+            ? item.copyWith(read: true)
+            : item,
+    ];
     _updateCount();
-    if (persist) _persist();
+    await _persist();
+  }
+
+  void _add(AppNotification notification) {
+    if (items.value.any((item) => item.id == notification.id)) return;
+    _publish([notification, ...items.value]);
+  }
+
+  void _publish(List<AppNotification> next) {
+    next.sort((a, b) {
+      final time = b.timestamp.compareTo(a.timestamp);
+      return time == 0 ? a.id.compareTo(b.id) : time;
+    });
+    var other = 0;
+    items.value = [
+      for (final item in next)
+        if (item.type == AppNotificationType.alert || other++ < 100) item,
+    ];
+    _updateCount();
+    _saveTimer ??= Timer(const Duration(seconds: 2), () {
+      _saveTimer = null;
+      _persist();
+    });
   }
 
   Future<void> markRead(String id) async {
@@ -178,12 +184,14 @@ class NotificationService {
     try {
       final prefs = await SharedPreferences.getInstance();
       _historyCursor = prefs.getInt(_historyCursorKey) ?? 0;
-      _alertCursor = prefs.getInt(_alertCursorKey) ?? 0;
       final raw = prefs.getString(_itemsKey);
       if (raw != null) {
         items.value = (jsonDecode(raw) as List<dynamic>)
             .map((item) =>
                 AppNotification.fromMap(Map<String, dynamic>.from(item as Map)))
+            .where((item) =>
+                item.type != AppNotificationType.alert ||
+                item.id.startsWith('water-'))
             .toList()
           ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
       }
@@ -191,11 +199,6 @@ class NotificationService {
       items.value = const [];
     }
     _updateCount();
-  }
-
-  void _publishAndPersist() {
-    _updateCount();
-    _persist();
   }
 
   void _updateCount() {
@@ -206,7 +209,6 @@ class NotificationService {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt(_historyCursorKey, _historyCursor);
-      await prefs.setInt(_alertCursorKey, _alertCursor);
       await prefs.setString(
         _itemsKey,
         jsonEncode(items.value.map((item) => item.toMap()).toList()),
@@ -216,9 +218,10 @@ class NotificationService {
 
   void dispose() {
     _historySub?.cancel();
-    _alertSub?.cancel();
+    _alertFeed.items.removeListener(_syncAlerts);
     _gsmSub?.cancel();
     _promoTimer?.cancel();
+    _saveTimer?.cancel();
     _started = false;
   }
 }

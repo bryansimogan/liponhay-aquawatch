@@ -1,6 +1,5 @@
 import '../data/response_content.dart';
 import '../services/i18n.dart';
-import '../services/sync_service.dart';
 import 'incident.dart';
 import 'sensor_data.dart';
 import 'water_quality.dart';
@@ -8,6 +7,7 @@ import 'water_quality.dart';
 /// Persisted response-center state. Advancing the same timestamp is idempotent.
 class ManagementLogs {
   static const verificationPeriod = Duration(minutes: 10);
+  static const maxVerificationGap = Duration(seconds: 60);
 
   ManagementLogs({List<Incident>? incidents, this.lastReadingAt = 0})
       : incidents = incidents ?? [];
@@ -43,8 +43,7 @@ class ManagementLogs {
     final records = [for (final i in incidents) Incident.fromMap(i.toMap())];
     final gap = !allowDemoTimeJump &&
         lastReadingAt > 0 &&
-        sample.timestamp - lastReadingAt >
-            SyncService.deviceStaleAfter.inMilliseconds;
+        sample.timestamp - lastReadingAt > maxVerificationGap.inMilliseconds;
     final values = {
       'ph': sample.ph,
       't': sample.temperature,
@@ -74,6 +73,7 @@ class ManagementLogs {
         if (!reading.isSafe) {
           if (level == 'crit') incident.lvl = 'crit';
           incident.lastUnsafeValue = value;
+          incident.lastUnsafeAt = sample.timestamp;
           incident.title = paramTitle(p, value);
           continue;
         }
@@ -143,6 +143,7 @@ class ManagementLogs {
         }
       } else {
         incident.lastUnsafeValue = value;
+        incident.lastUnsafeAt = sample.timestamp;
         incident.title = paramTitle(p, value);
         if (incident.safeSince != null) {
           incident.safeSince = null;

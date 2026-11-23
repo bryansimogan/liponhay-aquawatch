@@ -5,10 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../app_theme.dart';
-import '../services/alert_count_service.dart';
 import '../services/app_store.dart';
-import '../services/firebase_service.dart';
-import '../models/sensor_data.dart';
 import '../services/sync_service.dart';
 import '../services/notification_service.dart';
 import '../widgets/loading_emblem.dart';
@@ -44,9 +41,6 @@ class _SplashScreenState extends State<SplashScreen>
   late final AnimationController _drift;
   late final AnimationController _handover;
   late final AnimationController _exit;
-
-  /// Handed to the Dashboard so it opens with numbers rather than loading again.
-  SensorData? _prefetched;
 
   @override
   void initState() {
@@ -98,33 +92,14 @@ class _SplashScreenState extends State<SplashScreen>
     // tour there, over the real screen.
     Navigator.of(context).pushReplacement(
       FadeThroughRoute(
-        screen: DashboardScreen(initialReading: _prefetched),
+        screen: const DashboardScreen(),
       ),
     );
   }
 
-  /// Starts the two things every screen reads from, before any screen exists.
-  ///
-  /// The alert count in particular used to be worked out by the Dashboard
-  /// alone, so the bell badge emptied the moment you opened any other tab.
-  /// Starting it here means the number belongs to the app, not to one screen.
   Future<void> _startServices() async {
     await SyncService.instance.start();
-    AlertCountService.instance.start(simMode: false);
-    await NotificationService.instance.start(simMode: false);
-
-    // Pull the current reading here rather than letting the Dashboard do it
-    // on arrival. It warms the database connection and confirms there is
-    // something to show, so the Dashboard opens with numbers instead of
-    // opening empty and filling in a moment later — the loader is the right
-    // place to wait, not the screen behind it.
-    try {
-      _prefetched = await FirebaseService()
-          .getCurrentReading('pond1')
-          .timeout(const Duration(seconds: 6));
-    } catch (e) {
-      debugPrint('Prefetch skipped: $e');
-    }
+    await NotificationService.instance.start();
   }
 
   /// An anonymous session, so database rules that require `auth != null` still

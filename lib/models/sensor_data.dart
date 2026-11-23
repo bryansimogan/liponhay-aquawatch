@@ -1,5 +1,8 @@
+import 'water_quality.dart';
+
 /// Model representing a single sensor reading from one pond.
 class SensorData {
+  static final minEpochMilliseconds = DateTime.utc(2020).millisecondsSinceEpoch;
   final double ph;
   final double temperature;
   final double dissolvedOxygen;
@@ -16,44 +19,49 @@ class SensorData {
     this.status = 'normal',
   });
 
-  factory SensorData.fromMap(Map<dynamic, dynamic> map) {
-    return SensorData(
-      ph: (map['ph'] as num?)?.toDouble() ?? 7.0,
-      temperature: (map['temperature'] as num?)?.toDouble() ?? 28.0,
-      dissolvedOxygen: (map['dissolved_oxygen'] as num?)?.toDouble() ?? 6.0,
-      timestamp: (map['timestamp'] as num?)?.toInt() ??
-          DateTime.now().millisecondsSinceEpoch,
-      status: (map['status'] as String?) ?? 'normal',
-      ammoniaNh3: _measuredAmmonia(map),
-    );
-  }
-
   /// History must carry measured values and a timestamp.
-  static SensorData? tryFromHistoryMap(Map<dynamic, dynamic> map) {
+  static SensorData? tryFromHistoryMap(Map<dynamic, dynamic> map,
+      {String? key}) {
     final ph = map['ph'];
     final temperature = map['temperature'];
     final oxygen = map['dissolved_oxygen'];
-    final time = map['timestamp'];
+    final time =
+        timestampMilliseconds(map['timestamp']) ?? timestampMilliseconds(key);
     if (ph is! num ||
         !ph.isFinite ||
         temperature is! num ||
         !temperature.isFinite ||
         oxygen is! num ||
         !oxygen.isFinite ||
-        time is! num ||
-        !time.isFinite ||
-        time <= 0) {
+        time == null) {
       return null;
     }
     return SensorData(
       ph: ph.toDouble(),
       temperature: temperature.toDouble(),
       dissolvedOxygen: oxygen.toDouble(),
-      timestamp: time.toInt(),
+      timestamp: time,
       ammoniaNh3: _measuredAmmonia(map),
       status: map['status'] is String ? map['status'] as String : 'normal',
     );
   }
+
+  /// Firmware uses UTC epoch time. Accept seconds and numeric history keys
+  /// without interpreting either as the phone's local time.
+  static int? timestampMilliseconds(Object? value) {
+    final number = value is num ? value : num.tryParse(value?.toString() ?? '');
+    if (number == null || !number.isFinite || number <= 0) return null;
+    final millis = (number < 100000000000 ? number * 1000 : number).toInt();
+    return millis >= minEpochMilliseconds && millis < 4102444800000
+        ? millis
+        : null;
+  }
+
+  List<ParamReading> get parameters => [
+        ParamReading.classify(WaterParam.ph, ph),
+        ParamReading.classify(WaterParam.temperature, temperature),
+        ParamReading.classify(WaterParam.dissolvedOxygen, dissolvedOxygen),
+      ];
 
   static double? _measuredAmmonia(Map<dynamic, dynamic> map) {
     final value = map['ammonia_nh3_mg_l'] ?? map['nh3_mg_l'];

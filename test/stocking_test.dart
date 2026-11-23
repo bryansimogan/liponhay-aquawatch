@@ -60,6 +60,22 @@ void main() {
     expect(store.stock.area, 50);
   });
 
+  test('an old local mortality summary cannot deduct fish after upgrade',
+      () async {
+    SharedPreferences.setMockInitialValues({
+      'aqua_store_live_v1':
+          '{"stock":{"n":1000,"area":250,"date":"2026-11-20"},'
+              '"mort":[{"n":7,"c":"Old sample","t":1795412888000}],'
+              '"harv":[{"id":1,"t":1795412888000,"n":20,"kg":8.6}]}',
+    });
+    final store = AppStore(simulation: false);
+    addTearDown(store.dispose);
+    await store.init();
+    expect(store.stock.n, 1000);
+    expect(store.mortality, isEmpty);
+    expect(store.aliveCount, 980);
+  });
+
   testWidgets(
       'separate Stocking button saves inputs and recalculates alive fish',
       (tester) async {

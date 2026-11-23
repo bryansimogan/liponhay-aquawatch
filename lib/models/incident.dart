@@ -6,6 +6,9 @@
 /// timeline of remarks ([IncidentRemark]) the way the prototype did.
 library;
 
+import 'alert_record.dart';
+import 'water_quality.dart';
+
 /// One line in an incident's timeline: an owner action, a logged fish death,
 /// or an automatic verification note.
 class IncidentRemark {
@@ -102,6 +105,25 @@ class Incident {
   double? latestValue;
   int? latestAt;
   double? lastUnsafeValue;
+  int? lastUnsafeAt;
+
+  AlertRecord? get latestAlert {
+    final parameter = switch (p) {
+      'ph' => WaterParam.ph,
+      't' => WaterParam.temperature,
+      'o' => WaterParam.dissolvedOxygen,
+      _ => null,
+    };
+    final time =
+        lastUnsafeAt ?? (latestValue == lastUnsafeValue ? latestAt : null);
+    final value =
+        time == null ? double.tryParse(val.split(' ').first) : lastUnsafeValue;
+    if (parameter == null || value == null || !value.isFinite) return null;
+    final reading = ParamReading.classify(parameter, value);
+    return reading.isSafe
+        ? null
+        : AlertRecord.fromParameter(reading, time ?? ts);
+  }
 
   double get problemValue =>
       lastUnsafeValue ?? double.tryParse(val.split(' ').first) ?? 0;
@@ -127,6 +149,7 @@ class Incident {
     this.latestValue,
     this.latestAt,
     this.lastUnsafeValue,
+    this.lastUnsafeAt,
   }) : rem = rem ?? [];
 
   bool get isOpen => st == 'open' || st == 'progress';
@@ -150,6 +173,7 @@ class Incident {
     latestValue = latest.latestValue;
     latestAt = latest.latestAt;
     lastUnsafeValue = latest.lastUnsafeValue;
+    lastUnsafeAt = latest.lastUnsafeAt;
   }
 
   Map<String, dynamic> toMap() => {
@@ -173,6 +197,7 @@ class Incident {
         'latest_value': latestValue,
         'latest_at': latestAt,
         'last_unsafe_value': lastUnsafeValue,
+        'last_unsafe_at': lastUnsafeAt,
       };
 
   factory Incident.fromMap(Map<dynamic, dynamic> m) => Incident(
@@ -198,6 +223,7 @@ class Incident {
         latestValue: (m['latest_value'] as num?)?.toDouble(),
         latestAt: (m['latest_at'] as num?)?.toInt(),
         lastUnsafeValue: (m['last_unsafe_value'] as num?)?.toDouble(),
+        lastUnsafeAt: (m['last_unsafe_at'] as num?)?.toInt(),
       );
 }
 

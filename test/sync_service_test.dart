@@ -1,171 +1,139 @@
 import 'dart:async';
+
+import 'package:fish_farm_app/models/sensor_data.dart';
 import 'package:fish_farm_app/services/sync_service.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
-  TestWidgetsFlutterBinding.ensureInitialized();
-  late DateTime now;
-  late SyncService sync;
-  late StreamController<bool> connection;
-  late StreamController<bool> network;
-  late StreamController<int?> device;
-  late StreamController<Duration> offsets;
-  setUp(() async {
-    SharedPreferences.setMockInitialValues({});
-    now = DateTime(2026, 11, 20, 14);
-    sync = SyncService(clock: () => now);
-    connection = StreamController<bool>(sync: true);
-    network = StreamController<bool>(sync: true);
-    device = StreamController<int?>(sync: true);
-    offsets = StreamController<Duration>(sync: true);
-    await sync.start(
-        connections: connection.stream,
-        networkAvailability: network.stream,
-        deviceTimestamps: device.stream,
-        serverTimeOffsets: offsets.stream);
-  });
-  tearDown(() async {
-    sync.dispose();
-    await connection.close();
-    await network.close();
-    await device.close();
-    await offsets.close();
-  });
-  void connect() {
-    network.add(true);
-    connection.add(true);
-  }
-
-  test('starts offline and a phone connection alone cannot claim Synced', () {
-    expect(sync.online.value, isFalse);
-    expect(sync.phoneOnline.value, isFalse);
-    connect();
-    expect(sync.phoneOnline.value, isTrue);
-    expect(sync.online.value, isFalse);
-    expect(sync.lastSynced.value, isNull);
-    sync.markDeviceSeen(now.millisecondsSinceEpoch);
-    expect(sync.online.value, isTrue);
-  });
-
-  test('no network immediately clears status; replay cannot restore it', () {
-    connect();
-    final timestamp = now.millisecondsSinceEpoch;
-    sync.markDeviceSeen(timestamp);
-    network.add(false);
-    expect(sync.phoneOnline.value, isFalse);
-    expect(sync.online.value, isFalse);
-    sync.markDeviceSeen(timestamp);
-    network.add(true);
-    sync.markDeviceSeen(timestamp);
-    expect(sync.online.value, isFalse);
-    now = now.add(const Duration(seconds: 1));
-    sync.markDeviceSeen(now.millisecondsSinceEpoch);
-    expect(sync.online.value, isTrue);
-  });
-
-  test('Firebase disconnect and errors override an available WiFi interface',
-      () {
-    connect();
-    sync.markDeviceSeen(now.millisecondsSinceEpoch);
-    connection.add(false);
-    expect(sync.online.value, isFalse);
-    expect(sync.phoneOnline.value, isFalse);
-    connection.add(true);
-    expect(sync.online.value, isFalse);
-    now = now.add(const Duration(seconds: 1));
-    sync.markDeviceSeen(now.millisecondsSinceEpoch);
-    expect(sync.online.value, isTrue);
-    connection.addError(StateError('Unreachable database'));
-    expect(sync.online.value, isFalse);
-    expect(sync.phoneOnline.value, isFalse);
-  });
-
-  test('an advancing ESP32 timestamp can arrive before the connection event',
-      () {
-    network.add(true);
-    connection.add(false);
-    device.add(now.millisecondsSinceEpoch);
-    expect(sync.online.value, isFalse);
-    connection.add(true);
-    expect(sync.online.value, isTrue);
-    device.add(null);
-    expect(sync.online.value, isFalse);
-  });
-
-  test(
-      'server time corrects phone clock skew and fresh events allow a slightly fast device',
-      () {
-    connect();
-    offsets.add(const Duration(hours: 1));
-    device.add(
-        now.add(const Duration(hours: 1, seconds: 30)).millisecondsSinceEpoch);
-    expect(sync.online.value, isTrue);
-    now = now.add(const Duration(seconds: 61));
-    sync.refresh();
-    expect(sync.online.value, isFalse);
-    device.add(
-        now.add(const Duration(hours: 1, seconds: 30)).millisecondsSinceEpoch);
-    expect(sync.online.value, isTrue);
-  });
-
-  test(
-      'duplicate cached readings do not extend the controller freshness window',
-      () {
-    connect();
-    final timestamp = now.millisecondsSinceEpoch;
-    sync.markDeviceSeen(timestamp);
-    now = now.add(const Duration(seconds: 59));
-    sync.markDeviceSeen(timestamp);
-    expect(sync.online.value, isTrue);
-    now = now.add(const Duration(seconds: 2));
-    sync.refresh();
-    expect(sync.online.value, isFalse);
-    expect(sync.lastSynced.value!.millisecondsSinceEpoch, timestamp);
-    sync.markDeviceSeen(timestamp + 1);
-    expect(sync.online.value, isFalse);
-    sync.markDeviceSeen(now.millisecondsSinceEpoch);
-    expect(sync.online.value, isTrue);
-  });
-
-  test('old, future, pre-NTP and out-of-order timestamps cannot fake sync', () {
-    connect();
-    sync.markDeviceSeen(
-        now.subtract(const Duration(minutes: 10)).millisecondsSinceEpoch);
-    expect(sync.online.value, isFalse);
-    for (final invalid in [
-      0,
-      15000,
-      now.add(const Duration(hours: 1)).millisecondsSinceEpoch
-    ]) {
-      sync.markDeviceSeen(invalid);
+  testWidgets(
+      'connectivity checks tolerate a failure and recover independently',
+      (tester) async {
+    final link = StreamController<bool>(sync: true);
+    final internet = StreamController<bool>(sync: true);
+    final sync = SyncService();
+    await sync.start(connections: link.stream, internetChecks: internet.stream);
+    try {
+      internet.add(true);
+      link.add(true);
+      internet.add(false);
+      link.add(false);
+      await tester.pump(const Duration(seconds: 2));
+      expect(sync.phoneOnline.value, isTrue);
+      expect(sync.serverOnline.value, isTrue);
+      await tester.pump(const Duration(seconds: 3));
+      expect(sync.phoneOnline.value, isTrue);
+      expect(sync.serverOnline.value, isFalse);
+      internet.add(false);
+      expect(sync.phoneOnline.value, isFalse);
+      internet.add(true);
+      link.add(true);
+      expect(sync.phoneOnline.value, isTrue);
+      expect(sync.serverOnline.value, isTrue);
       expect(sync.online.value, isFalse);
+    } finally {
+      sync.dispose();
+      unawaited(link.close());
+      unawaited(internet.close());
     }
-    sync.markDeviceSeen(now.millisecondsSinceEpoch);
-    final latest = sync.lastSynced.value;
-    sync.markDeviceSeen(
-        now.subtract(const Duration(minutes: 1)).millisecondsSinceEpoch);
-    expect(sync.lastSynced.value, latest);
   });
 
-  test('restores cached age without treating the same cached reading as live',
-      () async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('last_synced_at', now.millisecondsSinceEpoch);
-    final restored = SyncService(clock: () => now);
-    final c = StreamController<bool>(sync: true);
-    final n = StreamController<bool>(sync: true);
-    await restored.start(connections: c.stream, networkAvailability: n.stream);
-    c.add(true);
-    n.add(true);
-    restored.markDeviceSeen(now.millisecondsSinceEpoch);
-    expect(restored.lastSynced.value, now);
-    expect(restored.online.value, isFalse);
-    now = now.add(const Duration(seconds: 1));
-    restored.markDeviceSeen(now.millisecondsSinceEpoch);
-    expect(restored.online.value, isTrue);
-    restored.dispose();
-    await c.close();
-    await n.close();
+  testWidgets(
+      'history can outrun current, retries recover, and stale data expires',
+      (tester) async {
+    var now = DateTime.utc(2026, 11, 23, 8, 30);
+    SensorData sample({int age = 0, double ph = 7}) => SensorData(
+        ph: ph,
+        temperature: 29,
+        dissolvedOxygen: 6,
+        timestamp: now.subtract(Duration(seconds: age)).millisecondsSinceEpoch);
+    final link = StreamController<bool>.broadcast(sync: true);
+    final current = StreamController<SensorData?>.broadcast(sync: true);
+    final history = StreamController<List<SensorData>>.broadcast(sync: true);
+    var subscriptions = 0;
+    final sync = SyncService(clock: () => now);
+    await sync.start(
+        connections: link.stream,
+        currentReadings: () {
+          subscriptions++;
+          return current.stream;
+        },
+        historyReadings: () => history.stream);
+    try {
+      link.add(true);
+      final old = sample(age: 3600);
+      current.add(old);
+      expect(sync.ageLabel.value, '1 hour ago');
+      expect(sync.online.value, isFalse);
+      final fresh = sample(age: 10, ph: 8.8);
+      history.add([fresh]);
+      expect(sync.latestReading.value, fresh);
+      expect(sync.ageLabel.value, '10 s ago');
+      expect(sync.online.value, isTrue);
+      current.add(old);
+      current.addError(StateError('Transient read failure'));
+      expect(sync.online.value, isTrue);
+      expect(sync.latestReading.value, fresh);
+      await tester.pump(const Duration(seconds: 5));
+      expect(subscriptions, 2);
+      now = now.add(const Duration(seconds: 110));
+      await tester.pump(const Duration(seconds: 1));
+      expect(sync.online.value, isFalse);
+      expect(sync.ageLabel.value, '2 mins ago');
+      history.add([fresh]);
+      expect(sync.online.value, isFalse);
+      current.add(sample());
+      expect(sync.online.value, isTrue);
+      expect(sync.ageLabel.value, 'just now');
+    } finally {
+      sync.dispose();
+      unawaited(link.close());
+      unawaited(current.close());
+      unawaited(history.close());
+    }
+  });
+
+  testWidgets('server clock offset can validate a reading after it arrives',
+      (tester) async {
+    final now = DateTime.utc(2026, 11, 23);
+    final link = StreamController<bool>.broadcast(sync: true);
+    final clock = StreamController<Duration>.broadcast(sync: true);
+    final current = StreamController<SensorData?>.broadcast(sync: true);
+    final sync = SyncService(clock: () => now);
+    await sync.start(
+        connections: link.stream,
+        serverTimeOffsets: clock.stream,
+        currentReadings: () => current.stream);
+    try {
+      link.add(true);
+      final timestamp =
+          now.add(const Duration(hours: 1)).millisecondsSinceEpoch;
+      current.add(SensorData(
+          ph: 7, temperature: 29, dissolvedOxygen: 6, timestamp: timestamp));
+      expect(sync.online.value, isFalse);
+      expect(sync.lastSynced.value, isNull);
+      clock.add(const Duration(hours: 1));
+      expect(sync.online.value, isTrue);
+      expect(sync.lastSynced.value!.millisecondsSinceEpoch, timestamp);
+    } finally {
+      sync.dispose();
+      unawaited(link.close());
+      unawaited(clock.close());
+      unawaited(current.close());
+    }
+  });
+
+  test('UTC seconds and history keys normalize to epoch milliseconds', () {
+    final ms = DateTime.utc(2026, 11, 23, 8, 30).millisecondsSinceEpoch;
+    final map = {'ph': 7.1, 'temperature': 29, 'dissolved_oxygen': 6.0};
+    expect(
+        SensorData.tryFromHistoryMap({...map, 'timestamp': '${ms ~/ 1000}'})
+            ?.timestamp,
+        ms);
+    expect(
+        SensorData.tryFromHistoryMap({...map, 'timestamp': 0}, key: '$ms')
+            ?.timestamp,
+        ms);
+    expect(SensorData.tryFromHistoryMap({...map, 'timestamp': 18000}), isNull);
+    expect(SensorData.tryFromHistoryMap({'ph': 7.2, 'timestamp': ms}), isNull);
   });
 }

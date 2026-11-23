@@ -1,10 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../app_theme.dart';
 import '../data/response_content.dart';
+import '../models/alert_record.dart';
 import '../models/incident.dart';
 import '../models/notification_copy.dart';
 import '../services/app_store.dart';
@@ -49,6 +51,9 @@ class _ManageScreenState extends State<ManageScreen> {
   Widget build(BuildContext context) {
     final s = context.watch<AppStore>();
     final open = s.openIncidents;
+    final alerts = s.hasCurrentReading
+        ? AlertRecord.forReading(s.currentReading)
+        : const <AlertRecord>[];
 
     return Scaffold(
       backgroundColor: AppTheme.of(context).bg,
@@ -70,7 +75,7 @@ class _ManageScreenState extends State<ManageScreen> {
                     )),
                   ),
                 if (s.hasCurrentReading)
-                  Reveal(child: _safeStrip(s))
+                  Reveal(child: _safeStrip(s, alerts))
                 else
                   Container(
                     padding: const EdgeInsets.all(14),
@@ -167,7 +172,7 @@ class _ManageScreenState extends State<ManageScreen> {
       );
 
   // ─── Safe strip ──────────────────────────────────────────────────
-  Widget _safeStrip(AppStore s) {
+  Widget _safeStrip(AppStore s, List<AlertRecord> alerts) {
     const names = {'ph': 'pH', 't': 'Temp', 'o': 'DO'};
     final open = s.openIncidents;
     final safe = ['ph', 't', 'o']
@@ -231,6 +236,17 @@ class _ManageScreenState extends State<ManageScreen> {
                         fontSize: 12,
                         height: 1.35,
                         color: AppTheme.of(context).inkSoft)),
+                for (final alert in alerts)
+                  Text(
+                    '${localizeSystemMessage(alert.parameterLabel)} · ${alert.formattedValue} · '
+                    '${levelName(alert.severity == 'critical' ? 'crit' : 'warn')} · '
+                    '${localizeSystemMessage(alert.condition)} · '
+                    '${DateFormat.MMMd(appDateLocale).add_jm().format(alert.dateTime)}',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color:
+                            AppTheme.of(context).statusColor(alert.severity)),
+                  ),
               ],
             ),
           ),
@@ -350,9 +366,13 @@ class _ManageScreenState extends State<ManageScreen> {
   Widget _problemTile(AppStore store, Incident i) {
     final palette = AppTheme.of(context);
     final verifying = i.isVerifying;
+    final alert = i.latestAlert;
+    final readingLevel = alert == null
+        ? i.lvl
+        : (alert.severity == 'critical' ? 'crit' : 'warn');
     final color = verifying
         ? palette.aqua
-        : i.lvl == 'crit'
+        : readingLevel == 'crit'
             ? palette.coral
             : palette.amber;
     final (left, fraction) = _incidentTimer(i, store.nowMs);
@@ -386,13 +406,18 @@ class _ManageScreenState extends State<ManageScreen> {
                   _pill(
                       verifying
                           ? L('Verifying', 'Bine-verify')
-                          : levelName(i.lvl),
+                          : levelName(readingLevel),
                       color),
                 ],
               ),
               const SizedBox(height: 8),
               Text(paramMeta[i.p]!.label,
                   style: TextStyle(fontSize: 12, color: palette.inkSoft)),
+              if (!verifying && alert != null)
+                Text(
+                  '${alert.formattedValue} · ${localizeSystemMessage(alert.condition)}',
+                  style: TextStyle(fontSize: 11, color: color),
+                ),
               Text(
                 verifying || left > 0
                     ? clock(left < 0 ? 0 : left)
@@ -766,6 +791,7 @@ class _IncidentDetailSheetState extends State<_IncidentDetailSheet> {
     final i = s.incidents.where((x) => x.id == widget.incidentId).firstOrNull;
     if (i == null) return const SizedBox.shrink();
     final rk = riskKey(i.p, i.problemValue);
+    final alert = i.latestAlert;
     final open = i.isOpen;
     final crit = i.lvl == 'crit';
     final accent =
@@ -805,12 +831,17 @@ class _IncidentDetailSheetState extends State<_IncidentDetailSheet> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                        '${paramTitle(i.p, i.problemValue)} · ${formatReading(i.p, i.problemValue)}',
+                        '${paramTitle(i.p, alert?.value ?? i.problemValue)} · ${alert?.formattedValue ?? formatReading(i.p, i.problemValue)}',
                         style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w700,
                             color: AppTheme.of(context).ink)),
-                    Text('${fd(i.ts)} · ${levelName(i.lvl)}',
+                    Text(
+                        alert == null
+                            ? '${fd(i.ts)} · ${levelName(i.lvl)}'
+                            : '${DateFormat.MMMd(appDateLocale).add_jm().format(alert.dateTime)} · '
+                                '${levelName(alert.severity == 'critical' ? 'crit' : 'warn')} · '
+                                '${localizeSystemMessage(alert.condition)}',
                         style: TextStyle(
                             fontSize: 12, color: AppTheme.of(context).inkSoft)),
                   ],

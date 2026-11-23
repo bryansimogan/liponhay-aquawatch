@@ -19,7 +19,7 @@ class OfflineCacheService {
   static String _currentKey(String pondId) => '${_prefix}_current_$pondId';
   static String _historyKey(String pondId) => '${_prefix}_history_$pondId';
   static String _mortalityKey(String pondId) => '${_prefix}_mortality_$pondId';
-  static const _alertsKey = '${_prefix}_alerts';
+  static const _alertsKey = 'water_alerts_v2';
   static const _recipientKey = '${_prefix}_sms_recipient';
 
   static Future<void> saveCurrent(String pondId, SensorData reading) async {

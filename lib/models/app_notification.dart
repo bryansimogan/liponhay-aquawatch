@@ -1,3 +1,5 @@
+import 'alert_record.dart';
+
 enum AppNotificationType { history, alert, promo }
 
 /// One in-app notification shown from the header bell.
@@ -7,6 +9,7 @@ class AppNotification {
   final String title;
   final String body;
   final int timestamp;
+  final String? severity;
   final bool read;
 
   const AppNotification({
@@ -15,8 +18,21 @@ class AppNotification {
     required this.title,
     required this.body,
     required this.timestamp,
+    this.severity,
     this.read = false,
   });
+
+  factory AppNotification.fromWaterAlert(AlertRecord alert,
+          {bool read = false}) =>
+      AppNotification(
+        id: alert.id,
+        type: AppNotificationType.alert,
+        title: '${alert.severityLabel} alert · ${alert.parameterLabel}',
+        body: '${alert.formattedValue} · ${alert.condition}',
+        timestamp: alert.timestamp,
+        severity: alert.severity,
+        read: read,
+      );
 
   AppNotification copyWith({bool? read}) => AppNotification(
         id: id,
@@ -24,6 +40,7 @@ class AppNotification {
         title: title,
         body: body,
         timestamp: timestamp,
+        severity: severity,
         read: read ?? this.read,
       );
 
@@ -33,6 +50,7 @@ class AppNotification {
         'title': title,
         'body': body,
         'timestamp': timestamp,
+        if (severity != null) 'severity': severity,
         'read': read,
       };
 
@@ -46,6 +64,7 @@ class AppNotification {
         title: map['title'] as String? ?? 'Update',
         body: map['body'] as String? ?? '',
         timestamp: (map['timestamp'] as num?)?.toInt() ?? 0,
+        severity: map['severity'] as String?,
         read: map['read'] as bool? ?? false,
       );
 }

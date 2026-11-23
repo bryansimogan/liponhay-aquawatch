@@ -1,12 +1,9 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../app_theme.dart';
 import '../models/sensor_data.dart';
 import '../models/water_quality.dart';
-import '../services/firebase_service.dart';
-import '../services/app_store.dart';
 import '../services/i18n.dart';
 import '../services/sync_service.dart';
 import '../widgets/app_bottom_nav.dart';
@@ -20,26 +17,16 @@ import '../widgets/water_quality_status_chart.dart';
 
 /// Live water-quality dashboard for the selected pond.
 class DashboardScreen extends StatefulWidget {
-  /// The reading the splash already fetched, if it got one.
-  ///
-  /// Without it the Dashboard opened on its own loader and waited for the
-  /// stream all over again — so after the splash finished you saw a second,
-  /// shorter load. The work was already done; this hands it across instead of
-  /// throwing it away.
-  final SensorData? initialReading;
-
-  const DashboardScreen({super.key, this.initialReading});
+  const DashboardScreen({super.key});
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  final FirebaseService _firebase = FirebaseService();
-  AppStore? _demoStore;
+  final _sync = SyncService.instance;
 
   String _pondId = 'pond1';
-  bool _simMode = true;
   bool _loading = true;
 
   /// A pull-to-refresh in flight, kept apart from [_loading].
@@ -51,7 +38,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _refreshing = false;
 
   SensorData? _data;
-  StreamSubscription? _sub;
 
   /// Stops the loader from waiting for ever.
   ///
@@ -79,19 +65,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
-    // Open with what the splash already has, so there is nothing to wait for.
-    if (widget.initialReading != null) {
-      _data = widget.initialReading;
-      _loading = false;
-    }
+    _sync.latestReading.addListener(_updateReading);
+    _data = _sync.latestReading.value;
+    _loading = _data == null;
+    _waitForFirstReading();
     _init();
   }
 
   Future<void> _init() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
-    _simMode = context.read<AppStore>().simulation;
-    _listen();
     _maybeStartTour(prefs);
   }
 
@@ -232,65 +215,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       ];
 
-  void _listen() {
-    _sub?.cancel();
+  void _waitForFirstReading() {
+    if (!_loading) return;
     _firstReadingDeadline?.cancel();
-    final listeningPond = _pondId;
     _firstReadingDeadline = Timer(const Duration(seconds: 8), () {
       if (mounted && _loading) setState(() => _loading = false);
     });
-
-    if (_simMode) {
-      _firstReadingDeadline?.cancel();
-      if (_demoStore == null) {
-        _demoStore = context.read<AppStore>();
-        _demoStore!.addListener(_publishDemoReading);
-      }
-      _publishDemoReading();
-    } else {
-      // Display saved values while offline, but never count a cache read as a
-      // live ESP32 contact.
-      if (_data == null) {
-        _firebase.getCachedCurrentReading(listeningPond).then((cached) {
-          if (!mounted ||
-              _pondId != listeningPond ||
-              cached == null ||
-              _data != null) {
-            return;
-          }
-          setState(() {
-            _data = cached;
-            _loading = false;
-          });
-        });
-      }
-      _sub = _firebase.currentReadingStream(_pondId).listen(
-        (data) {
-          if (data != null) {
-            _firstReadingDeadline?.cancel();
-            if (mounted) {
-              setState(() {
-                _data = data;
-                _loading = false;
-              });
-            }
-          } else if (mounted) {
-            _firstReadingDeadline?.cancel();
-            setState(() => _loading = false);
-          }
-        },
-        onError: (_) {
-          _firstReadingDeadline?.cancel();
-          if (mounted) setState(() => _loading = false);
-        },
-      );
-    }
   }
 
-  void _publishDemoReading() {
-    if (!mounted) return;
+  void _updateReading() {
+    if (!mounted || _sync.latestReading.value == null) return;
+    _firstReadingDeadline?.cancel();
     setState(() {
-      _data = _demoStore!.currentReading;
+      _data = _sync.latestReading.value;
       _loading = false;
     });
   }
@@ -303,7 +240,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   /// like the one act they are.
   Future<void> _refresh() async {
     setState(() => _refreshing = true);
-    _listen();
+    _updateReading();
 
     // Long enough for the fish to register as a step rather than a blink.
     await Future<void>.delayed(const Duration(milliseconds: 900));
@@ -316,14 +253,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _loading = true;
       _data = null;
     });
-    _listen();
+    _updateReading();
+    _waitForFirstReading();
   }
 
   @override
   void dispose() {
     _firstReadingDeadline?.cancel();
-    _sub?.cancel();
-    _demoStore?.removeListener(_publishDemoReading);
+    _sync.latestReading.removeListener(_updateReading);
     super.dispose();
   }
 
@@ -361,8 +298,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
               const SizedBox(height: 6),
               Text(
-                'The controller has not sent anything. It may be powered '
-                'off, out of WiFi range, or still starting up.',
+                'No valid sensor reading is available. Check the ESP32 '
+                'connection and clock if readings do not arrive.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 12,
@@ -386,15 +323,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  List<ParamReading> get _readings {
-    final d = _data;
-    if (d == null) return const [];
-    return [
-      ParamReading.classify(WaterParam.ph, d.ph),
-      ParamReading.classify(WaterParam.temperature, d.temperature),
-      ParamReading.classify(WaterParam.dissolvedOxygen, d.dissolvedOxygen),
-    ];
-  }
+  List<ParamReading> get _readings => _data?.parameters ?? const [];
 
   @override
   Widget build(BuildContext context) {
@@ -441,9 +370,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                               CrossAxisAlignment.start,
                                           children: [
                                             Text(
-                                              _simMode
-                                                  ? 'Demo mode · Monitoring'
-                                                  : 'Monitoring',
+                                              'Monitoring',
                                               style: TextStyle(
                                                 fontSize: 11,
                                                 color: AppTheme.of(context)
@@ -486,7 +413,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                             const SizedBox(width: 2),
                                             KeyedSubtree(
                                               key: _kConn,
-                                              child: const SyncPill(),
+                                              child: ConstrainedBox(
+                                                constraints: BoxConstraints(
+                                                    maxWidth: 180),
+                                                child: SyncPill(),
+                                              ),
                                             ),
                                           ],
                                         ),
@@ -759,9 +690,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   /// Teal tile showing how fresh the data is.
   Widget _updatedCard() {
-    return ValueListenableBuilder<DateTime?>(
-      valueListenable: SyncService.instance.lastSynced,
-      builder: (context, lastSynced, _) {
+    return ValueListenableBuilder<String>(
+      valueListenable: _sync.ageLabel,
+      builder: (context, age, _) {
         return Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
@@ -774,7 +705,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const Icon(Icons.schedule_rounded, size: 25, color: Colors.white),
               const SizedBox(height: 8),
               Text(
-                'Updated',
+                'Last Sync',
                 style: TextStyle(
                   fontSize: 11,
                   color: Colors.white.withOpacity(0.7),
@@ -782,7 +713,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
               const SizedBox(height: 1),
               Text(
-                SyncService.relativeLabel(lastSynced),
+                age,
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   fontSize: 12,

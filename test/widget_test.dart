@@ -316,30 +316,6 @@ void main() {
           '2 days ago');
     });
 
-    test('invalid device timestamps never invent a fresh sync', () {
-      final sync = SyncService();
-      for (final timestamp in [
-        0,
-        18827,
-        DateTime.now().add(const Duration(days: 1)).millisecondsSinceEpoch
-      ]) {
-        sync.markDeviceSeen(timestamp);
-        expect(sync.lastSynced.value, isNull);
-        expect(sync.online.value, isFalse);
-      }
-      sync.dispose();
-    });
-
-    test('a valid stale timestamp preserves its actual age', () {
-      final sync = SyncService();
-      sync.markDeviceSeen(DateTime.now()
-          .subtract(const Duration(minutes: 12))
-          .millisecondsSinceEpoch);
-      expect(SyncService.relativeLabel(sync.lastSynced.value), '12 mins ago');
-      expect(sync.online.value, isFalse);
-      sync.dispose();
-    });
-
     test('relativeLabel never prints an absurd age', () {
       final ancient = DateTime.fromMillisecondsSinceEpoch(0);
       expect(SyncService.relativeLabel(ancient), 'over a year ago');
@@ -347,54 +323,47 @@ void main() {
       expect(SyncService.relativeLabel(future), 'just now');
     });
 
-    testWidgets('pill requires both phone and controller for Online and Synced',
+    testWidgets('connection chips distinguish phone, server, and controller',
         (tester) async {
-      // Both up.
-      SyncService.instance.phoneOnline.value = true;
-      SyncService.instance.online.value = true;
+      final sync = SyncService.instance;
+      sync.phoneOnline.value = true;
+      sync.serverOnline.value = false;
+      sync.online.value = true;
+      sync.ageLabel.value = '10 s ago';
       await tester.pumpWidget(_wrap(const SyncPill()));
       await tester.pumpAndSettle();
-      expect(find.text('Online'), findsOneWidget);
-      expect(find.text('Synced'), findsOneWidget);
+      expect(find.text('Phone Online'), findsOneWidget);
+      expect(find.text('Server Offline'), findsOneWidget);
+      expect(find.text('ESP32 Online'), findsOneWidget);
+      expect(find.text('Last sync 10 s ago'), findsOneWidget);
 
-      // Phone fine, controller quiet: the second chip becomes the age of the
-      // last reading, because "offline" would not say whose.
-      SyncService.instance.online.value = false;
-      SyncService.instance.lastSynced.value =
-          DateTime.now().subtract(const Duration(minutes: 12));
+      sync.serverOnline.value = true;
+      sync.online.value = false;
+      sync.ageLabel.value = '2 mins ago';
       await tester.pumpAndSettle();
-      expect(find.text('Online'), findsNothing);
-      expect(find.text('Offline'), findsOneWidget);
-      expect(find.text('Last sync 12 mins ago'), findsOneWidget);
-
-      // Phone has no data or WiFi.
-      SyncService.instance.phoneOnline.value = false;
-      await tester.pumpAndSettle();
-      expect(find.text('Offline'), findsOneWidget);
+      expect(find.text('Server Online'), findsOneWidget);
+      expect(find.text('ESP32 Offline'), findsOneWidget);
+      expect(find.text('Last sync 2 mins ago'), findsOneWidget);
     });
 
     testWidgets('banner names which link dropped', (tester) async {
-      SyncService.instance.phoneOnline.value = true;
-      SyncService.instance.online.value = true;
-      SyncService.instance.lastSynced.value =
-          DateTime.now().subtract(const Duration(minutes: 12));
-
+      final sync = SyncService.instance;
+      sync.phoneOnline.value = true;
+      sync.serverOnline.value = true;
+      sync.online.value = false;
+      sync.ageLabel.value = '12 mins ago';
       await tester.pumpWidget(_wrap(const SyncBanner()));
       await tester.pumpAndSettle();
-      expect(find.textContaining('LAST READING'), findsNothing);
-      expect(find.textContaining('NO CONNECTION'), findsNothing);
-
-      // Controller quiet — a trip to the pond.
-      SyncService.instance.online.value = false;
-      await tester.pumpAndSettle();
-      expect(find.textContaining('CONTROLLER QUIET'), findsOneWidget);
+      expect(find.textContaining('ESP32 OFFLINE'), findsOneWidget);
       expect(find.textContaining('12 MINS AGO'), findsOneWidget);
 
-      // Phone unreachable — load or WiFi, which the reader can fix.
-      SyncService.instance.phoneOnline.value = false;
+      sync.serverOnline.value = false;
       await tester.pumpAndSettle();
-      expect(find.textContaining('NO CONNECTION'), findsOneWidget);
-      expect(find.textContaining('CONTROLLER QUIET'), findsNothing);
+      expect(find.textContaining('SERVER OFFLINE'), findsOneWidget);
+
+      sync.phoneOnline.value = false;
+      await tester.pumpAndSettle();
+      expect(find.textContaining('PHONE OFFLINE'), findsOneWidget);
     });
   });
 

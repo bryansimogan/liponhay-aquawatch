@@ -167,69 +167,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ],
                         ),
                       ),
-                      const Padding(
-                        padding: EdgeInsets.only(top: 4),
-                        child: SyncPill(),
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(maxWidth: 150),
+                          child: SyncPill(),
+                        ),
                       ),
                     ],
                   ),
                 ),
                 const SizedBox(height: 16),
-
                 _sectionLabel('CONNECTION'),
-                // This phone's own link, listed first because it is the only
-                // one of the two the person reading this can act on: WiFi out
-                // of range, or a prepaid SIM with no data left.
                 Reveal(
                   delayMs: 40,
-                  child: ValueListenableBuilder<bool>(
+                  child: ValueListenableBuilder<bool?>(
                     valueListenable: SyncService.instance.phoneOnline,
-                    builder: (context, phoneOnline, _) {
-                      return _card(
-                        icon: phoneOnline
-                            ? Icons.wifi_rounded
-                            : Icons.wifi_off_rounded,
-                        iconColor: phoneOnline
-                            ? AppTheme.of(context).deep
-                            : AppTheme.of(context).coral,
-                        title: phoneOnline
-                            ? 'This phone online'
-                            : 'This phone offline',
-                        subtitle: phoneOnline
-                            ? 'Reaching the database over WiFi or mobile data'
-                            : 'No WiFi, or the SIM has no data left',
-                        trailing: const SizedBox.shrink(),
-                      );
-                    },
+                    builder: (context, reachable, _) => _connectionCard(
+                      'Phone internet',
+                      reachable,
+                      'WiFi or mobile data',
+                      Icons.wifi_rounded,
+                      Icons.wifi_off_rounded,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Reveal(
+                  delayMs: 65,
+                  child: ValueListenableBuilder<bool?>(
+                    valueListenable: SyncService.instance.serverOnline,
+                    builder: (context, reachable, _) => _connectionCard(
+                      'Firebase server',
+                      reachable,
+                      'Realtime Database',
+                      Icons.cloud_done_outlined,
+                      Icons.cloud_off_outlined,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 8),
                 Reveal(
                   delayMs: 90,
-                  child: ValueListenableBuilder<DateTime?>(
-                    valueListenable: SyncService.instance.lastSynced,
-                    builder: (context, lastSynced, _) {
-                      return ValueListenableBuilder<bool>(
-                        valueListenable: SyncService.instance.online,
-                        builder: (context, online, _) {
-                          return _card(
-                            icon: online
-                                ? Icons.cloud_done_outlined
-                                : Icons.cloud_off_outlined,
-                            iconColor: online
-                                ? AppTheme.of(context).aqua
-                                : AppTheme.of(context).coral,
-                            title: online ? 'ESP32 online' : 'ESP32 offline',
-                            subtitle: 'Last reading '
-                                '${SyncService.relativeLabel(lastSynced)}',
-                            trailing: const SizedBox.shrink(),
-                          );
-                        },
-                      );
-                    },
+                  child: ValueListenableBuilder<String>(
+                    valueListenable: SyncService.instance.ageLabel,
+                    builder: (context, age, _) => ValueListenableBuilder<bool>(
+                      valueListenable: SyncService.instance.online,
+                      builder: (context, online, _) => _connectionCard(
+                        'ESP32',
+                        online,
+                        'Last reading $age',
+                        Icons.sensors_rounded,
+                        Icons.sensors_off_rounded,
+                      ),
+                    ),
                   ),
                 ),
-
                 if (!context.read<AppStore>().simulation) ...[
                   const SizedBox(height: 18),
                   _sectionLabel('GSM / SMS'),
@@ -364,6 +357,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
           Row(children: [opt('en', 'English'), opt('tl', 'Tagalog')]),
         ],
       ),
+    );
+  }
+
+  Widget _connectionCard(String name, bool? reachable, String subtitle,
+      IconData connected, IconData disconnected) {
+    final palette = AppTheme.of(context);
+    final status = switch (reachable) {
+      true => 'Online',
+      false => 'Offline',
+      null => 'Checking',
+    };
+    return _card(
+      icon: reachable == true ? connected : disconnected,
+      iconColor: reachable == true ? palette.aqua : palette.coral,
+      title: '$name · $status',
+      subtitle: subtitle,
+      trailing: const SizedBox.shrink(),
     );
   }
 

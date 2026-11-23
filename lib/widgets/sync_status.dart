@@ -1,75 +1,45 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import '../app_theme.dart';
 import '../services/sync_service.dart';
 
-/// Overall live status and the age of the last actual controller reading.
-class SyncPill extends StatefulWidget {
+/// Distinct connection states using the existing compact status chips.
+class SyncPill extends StatelessWidget {
   const SyncPill({super.key});
 
   @override
-  State<SyncPill> createState() => _SyncPillState();
-}
-
-class _SyncPillState extends State<SyncPill> {
-  Timer? _refresh;
-
-  @override
-  void initState() {
-    super.initState();
-    _refresh = Timer.periodic(
-      const Duration(seconds: 20),
-      (_) => mounted ? setState(() {}) : null,
-    );
-  }
-
-  @override
-  void dispose() {
-    _refresh?.cancel();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<bool>(
-      valueListenable: SyncService.instance.phoneOnline,
-      builder: (context, phoneOnline, _) {
-        return ValueListenableBuilder<bool>(
-          valueListenable: SyncService.instance.online,
-          builder: (context, synced, _) {
-            return ValueListenableBuilder<DateTime?>(
-              valueListenable: SyncService.instance.lastSynced,
-              builder: (context, lastSynced, _) {
-                final live = phoneOnline && synced;
-                return Wrap(
-                  spacing: 6,
-                  runSpacing: 4,
-                  children: [
-                    _Chip(
-                      icon: live ? Icons.wifi_rounded : Icons.wifi_off_rounded,
-                      label: live ? 'Online' : 'Offline',
-                      color: live
-                          ? AppTheme.of(context).deep
-                          : AppTheme.of(context).coral,
-                    ),
-                    _Chip(
-                      icon: live
-                          ? Icons.cloud_done_rounded
-                          : Icons.cloud_off_rounded,
-                      // With nothing fresh from the device, the age of the
-                      // last reading says more than the word "offline" does.
-                      label: live
-                          ? 'Synced'
-                          : 'Last sync ${SyncService.relativeLabel(lastSynced)}',
-                      color: live
-                          ? AppTheme.of(context).aqua
-                          : AppTheme.of(context).amber,
-                    ),
-                  ],
-                );
-              },
-            );
-          },
+    final sync = SyncService.instance;
+    return ListenableBuilder(
+      listenable: Listenable.merge(
+          [sync.phoneOnline, sync.serverOnline, sync.online, sync.ageLabel]),
+      builder: (context, _) {
+        final palette = AppTheme.of(context);
+        Widget chip(String name, bool? reachable, IconData icon) {
+          final status = switch (reachable) {
+            true => 'Online',
+            false => 'Offline',
+            null => 'Checking',
+          };
+          return _Chip(
+            icon: icon,
+            label: '$name $status',
+            color: reachable == true ? palette.aqua : palette.amber,
+          );
+        }
+
+        return Wrap(
+          spacing: 6,
+          runSpacing: 4,
+          children: [
+            chip('Phone', sync.phoneOnline.value, Icons.wifi_rounded),
+            chip('Server', sync.serverOnline.value, Icons.cloud_outlined),
+            chip('ESP32', sync.online.value, Icons.sensors_rounded),
+            _Chip(
+              icon: Icons.schedule_rounded,
+              label: 'Last sync ${sync.ageLabel.value}',
+              color: palette.deep,
+            ),
+          ],
         );
       },
     );
@@ -119,102 +89,70 @@ class _Chip extends StatelessWidget {
   }
 }
 
-/// Banner that slides down when something is not reporting, and names which.
-///
-/// It used to say "LAST SYNCED 12 MINS AGO" for either failure. That is the
-/// right sentence for a quiet controller and the wrong one for a phone with
-/// no data left — there, the reading is not late, it is simply unreachable,
-/// and the fix is load rather than a trip to the pond.
-class SyncBanner extends StatefulWidget {
+/// Shows the reason readings are unavailable while keeping the last sample.
+class SyncBanner extends StatelessWidget {
   const SyncBanner({super.key});
 
   @override
-  State<SyncBanner> createState() => _SyncBannerState();
-}
-
-class _SyncBannerState extends State<SyncBanner> {
-  Timer? _refresh;
-
-  @override
-  void initState() {
-    super.initState();
-    _refresh = Timer.periodic(
-      const Duration(seconds: 20),
-      (_) => mounted ? setState(() {}) : null,
-    );
-  }
-
-  @override
-  void dispose() {
-    _refresh?.cancel();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<bool>(
-      valueListenable: SyncService.instance.phoneOnline,
-      builder: (context, phoneOnline, _) {
-        return ValueListenableBuilder<bool>(
-          valueListenable: SyncService.instance.online,
-          builder: (context, online, _) {
-            return ValueListenableBuilder<DateTime?>(
-              valueListenable: SyncService.instance.lastSynced,
-              builder: (context, lastSynced, _) {
-                // The phone's own link is the more urgent of the two, and the
-                // only one the person reading this can do anything about.
-                final tone = phoneOnline
-                    ? AppTheme.of(context).amber
-                    : AppTheme.of(context).coral;
-                final icon = phoneOnline
-                    ? Icons.sensors_off_rounded
-                    : Icons.wifi_off_rounded;
-                final message = phoneOnline
-                    ? 'CONTROLLER QUIET · LAST READING '
-                        '${SyncService.relativeLabel(lastSynced).toUpperCase()}'
-                    : 'NO CONNECTION · CHECK WIFI OR MOBILE DATA';
-                return AnimatedSize(
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeOutCubic,
-                  alignment: Alignment.topCenter,
-                  child: (online && phoneOnline)
-                      ? const SizedBox(width: double.infinity)
-                      : AnimatedOpacity(
-                          opacity: 1,
-                          duration: const Duration(milliseconds: 240),
-                          child: Container(
-                            width: double.infinity,
-                            margin: const EdgeInsets.only(bottom: 12),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 11),
-                            decoration: BoxDecoration(
-                              color: tone.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: tone.withOpacity(0.25)),
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(icon, size: 16, color: tone),
-                                const SizedBox(width: 9),
-                                Expanded(
-                                  child: Text(
-                                    message,
-                                    style: TextStyle(
-                                      fontSize: 11.5,
-                                      fontWeight: FontWeight.w700,
-                                      color: tone,
-                                      letterSpacing: 0.3,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                );
-              },
-            );
-          },
+    final sync = SyncService.instance;
+    return ListenableBuilder(
+      listenable: Listenable.merge(
+          [sync.phoneOnline, sync.serverOnline, sync.online, sync.ageLabel]),
+      builder: (context, _) {
+        final palette = AppTheme.of(context);
+        final phone = sync.phoneOnline.value;
+        final server = sync.serverOnline.value;
+        final hardware = sync.online.value;
+        final (message, icon, tone) = switch ((phone, server, hardware)) {
+          (false, _, _) => (
+              'PHONE OFFLINE · CHECK WIFI OR MOBILE DATA',
+              Icons.wifi_off_rounded,
+              palette.coral
+            ),
+          (_, false, _) => (
+              'SERVER OFFLINE · RECONNECTING',
+              Icons.cloud_off_outlined,
+              palette.coral
+            ),
+          (_, _, false) => (
+              'ESP32 OFFLINE · LAST READING ${sync.ageLabel.value.toUpperCase()}',
+              Icons.sensors_off_rounded,
+              palette.amber
+            ),
+          _ => ('', Icons.sensors_rounded, palette.aqua),
+        };
+        return AnimatedSize(
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.topCenter,
+          child: message.isEmpty
+              ? const SizedBox(width: double.infinity)
+              : Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+                  decoration: BoxDecoration(
+                    color: tone.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: tone.withValues(alpha: 0.25)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(icon, size: 16, color: tone),
+                      const SizedBox(width: 9),
+                      Expanded(
+                        child: Text(message,
+                            style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w700,
+                                color: tone,
+                                letterSpacing: 0.3)),
+                      ),
+                    ],
+                  ),
+                ),
         );
       },
     );

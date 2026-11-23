@@ -2,7 +2,6 @@ import 'package:firebase_database/firebase_database.dart';
 import '../models/sensor_data.dart';
 import '../models/mortality_record.dart';
 import '../models/mortality_analysis.dart';
-import '../models/alert_record.dart';
 import '../models/gsm_config.dart';
 import '../models/incident.dart';
 import '../models/management_logs.dart';
@@ -19,25 +18,26 @@ class FirebaseService {
   // ---- SENSOR DATA ----
 
   /// Get a real-time stream of the CURRENT reading for a specific pond.
-  Stream<SensorData?> currentReadingStream(String pondId) async* {
-    final remote =
-        _db.child('ponds').child(pondId).child('current').onValue.map((event) {
-      final data = event.snapshot.value;
-      if (data == null) return null;
-      return data is Map ? SensorData.tryFromHistoryMap(data) : null;
-    });
-    await for (final reading in remote) {
-      if (reading != null) {
-        await OfflineCacheService.saveCurrent(pondId, reading);
-      }
-      yield reading;
-    }
-  }
+  Stream<SensorData?> currentReadingStream(String pondId) =>
+      _db.child('ponds').child(pondId).child('current').onValue.map((event) {
+        final data = event.snapshot.value;
+        return data is Map ? SensorData.tryFromHistoryMap(data) : null;
+      });
 
-  /// Last reading saved on this phone. This is display data only and must not
-  /// be treated as proof that the ESP32 is currently online.
-  Future<SensorData?> getCachedCurrentReading(String pondId) =>
-      OfflineCacheService.current(pondId);
+  /// The firmware's history keys are epoch timestamps. Watch the recent tail
+  /// so a stalled current node cannot hide newer measured readings.
+  Stream<List<SensorData>> recentHardwareHistoryStream(String pondId) => _db
+      .child('ponds/$pondId/history')
+      .orderByKey()
+      .limitToLast(200)
+      .onValue
+      .map((event) => [
+            for (final child in event.snapshot.children)
+              if (child.value case final Map row)
+                if (SensorData.tryFromHistoryMap(row, key: child.key)
+                    case final reading?)
+                  reading,
+          ]..sort((a, b) => a.timestamp.compareTo(b.timestamp)));
 
   /// Emits only the newest saved History row and then every newer row.
   Stream<SensorData> latestHistoryStream(String pondId) => _db
@@ -47,8 +47,12 @@ class FirebaseService {
       .orderByChild('timestamp')
       .limitToLast(1)
       .onChildAdded
-      .map((event) => SensorData.fromMap(
-          Map<String, dynamic>.from(event.snapshot.value as Map)));
+      .map((event) => event.snapshot.value is Map
+          ? SensorData.tryFromHistoryMap(event.snapshot.value as Map,
+              key: event.snapshot.key)
+          : null)
+      .where((reading) => reading != null)
+      .cast<SensorData>();
 
   /// Get a one-time snapshot of the current reading.
   Future<SensorData?> getCurrentReading(String pondId) async {
@@ -56,9 +60,9 @@ class FirebaseService {
     if (cached != null) return cached;
     final snap = await _db.child('ponds').child(pondId).child('current').get();
     if (snap.value == null) return null;
-    final reading =
-        SensorData.fromMap(Map<String, dynamic>.from(snap.value as Map));
-    await OfflineCacheService.saveCurrent(pondId, reading);
+    final value = snap.value;
+    final reading = value is Map ? SensorData.tryFromHistoryMap(value) : null;
+    if (reading != null) await OfflineCacheService.saveCurrent(pondId, reading);
     return reading;
   }
 
@@ -77,7 +81,7 @@ class FirebaseService {
   }) async {
     // Once the connection monitor knows this phone is offline, avoid waiting
     // for a Firebase timeout and open the saved history immediately.
-    if (!SyncService.instance.phoneOnline.value) {
+    if (SyncService.instance.serverOnline.value == false) {
       return OfflineCacheService.history(
         pondId,
         since: since,
@@ -126,7 +130,7 @@ class FirebaseService {
 
   Future<List<MortalityReading>> getMortalityHistory(String pondId,
       {required DateTime since, required DateTime until}) async {
-    if (SyncService.instance.phoneOnline.value) {
+    if (SyncService.instance.serverOnline.value != false) {
       try {
         final snapshot = await _historyQuery(pondId, since: since, until: until)
             .get()
@@ -157,7 +161,7 @@ class FirebaseService {
     final history = await getMortalityHistory(pondId,
         since: eventAt.subtract(MortalityAnalysis.maxGap), until: eventAt);
     MortalityReading? current;
-    if (SyncService.instance.phoneOnline.value) {
+    if (SyncService.instance.serverOnline.value != false) {
       try {
         final snapshot = await _db
             .child('ponds/$pondId/current')
@@ -316,44 +320,11 @@ class FirebaseService {
       // empty value erase the last known data.
       if (records.isEmpty &&
           cached.isNotEmpty &&
-          !SyncService.instance.phoneOnline.value) {
+          SyncService.instance.serverOnline.value == false) {
         continue;
       }
       await OfflineCacheService.saveMortality(pondId, records);
       yield records;
-    }
-  }
-
-  // ---- ALERTS ----
-
-  /// Delete every alert. Used by "Clear all" on the Alerts screen — the
-  /// device writes new alerts as they happen, so this only clears the log.
-  Future<void> clearAllAlerts() async {
-    await _db.child('alerts').remove();
-    await OfflineCacheService.clearAlerts();
-  }
-
-  /// Stream all alerts.
-  Stream<List<AlertRecord>> alertsStream() async* {
-    final cached = await OfflineCacheService.alerts();
-    if (cached.isNotEmpty) yield cached;
-
-    final remote = _db.child('alerts').onValue.map((event) {
-      if (event.snapshot.value == null) return <AlertRecord>[];
-      final map = Map<String, dynamic>.from(event.snapshot.value as Map);
-      return map.entries
-          .map((e) => AlertRecord.fromMap(e.key, e.value))
-          .toList()
-        ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
-    });
-    await for (final alerts in remote) {
-      if (alerts.isEmpty &&
-          cached.isNotEmpty &&
-          !SyncService.instance.phoneOnline.value) {
-        continue;
-      }
-      await OfflineCacheService.saveAlerts(alerts);
-      yield alerts;
     }
   }
 
