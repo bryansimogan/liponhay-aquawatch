@@ -21,7 +21,7 @@ The app opens in live mode. Demo Mode controls and the alternate demo entry poin
 
 ## Connection status and printing
 
-Dashboard and Settings distinguish Android's validated internet connection, the Firebase session, and ESP32 freshness. The app watches both `ponds/pond1/current` and recent `ponds/pond1/history` and uses the newest valid measurement. Last Sync updates from the timestamp and shows elapsed seconds using Firebase's server clock estimate. The ESP32 is Offline at two minutes without a fresh reading. Temporary read failures preserve the last measurement and the app retries automatically.
+The Dashboard shows the phone's validated internet connection and ESP32 freshness together on the pond row. Settings also shows the Firebase session. The app watches both `ponds/pond1/current` and recent `ponds/pond1/history` and uses the newest valid measurement. After a quiet interval it checks for newer readings every five seconds, and it also checks on foreground resume. Last Sync uses the measurement timestamp and Firebase's server clock estimate. A reading becomes stale at two minutes.
 
 Alerts and Notifications share one local feed generated from the same readings and warning thresholds used in Dashboard and Management. Each pond, parameter, and measurement timestamp identifies one alert. The feed retains the latest 500 alerts and catches up from up to 200 recent hardware history rows on reconnect. Clearing alerts clears this feed on the current phone. This feed does not verify SMS delivery.
 

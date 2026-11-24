@@ -15,6 +15,7 @@ import 'package:fish_farm_app/models/gsm_config.dart';
 import 'package:fish_farm_app/models/mortality_record.dart';
 import 'package:fish_farm_app/models/sensor_data.dart';
 import 'package:fish_farm_app/models/water_quality.dart';
+import 'package:fish_farm_app/screens/dashboard_screen.dart';
 import 'package:fish_farm_app/services/i18n.dart';
 import 'package:fish_farm_app/services/offline_cache_service.dart';
 import 'package:fish_farm_app/services/sync_service.dart';
@@ -300,6 +301,56 @@ void main() {
   });
 
   group('sync status', () {
+    testWidgets('Dashboard keeps the tutorial and both pills on the pond row',
+        (tester) async {
+      SharedPreferences.setMockInitialValues({'dashboard_tour_done': true});
+      tester.view.physicalSize = const Size(320, 720);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final sync = SyncService.instance;
+      sync.phoneOnline.value = true;
+      sync.online.value = false;
+      sync.lastSynced.value = DateTime.now().subtract(const Duration(days: 2));
+      sync.ageLabel.value = '2 days ago';
+      sync.latestReading.value = SensorData(
+          ph: 7.4,
+          temperature: 36.1,
+          dissolvedOxygen: 1.24,
+          timestamp: sync.lastSynced.value!.millisecondsSinceEpoch);
+      addTearDown(() {
+        sync.phoneOnline.value = null;
+        sync.latestReading.value = null;
+        sync.lastSynced.value = null;
+        sync.ageLabel.value = 'never';
+      });
+      await tester.pumpWidget(MaterialApp(
+          theme: AppTheme.darkTheme, home: const DashboardScreen()));
+      await tester.pumpAndSettle();
+      final pond = tester.getCenter(find.text('Pond 1 · Tilapia'));
+      final tutorial =
+          tester.getCenter(find.byIcon(Icons.help_outline_rounded));
+      final internet = tester.getCenter(find.text('Online'));
+      final hardware = tester.getCenter(find.text('Last synced 2 days ago'));
+      expect(tutorial.dx, greaterThan(pond.dx));
+      expect(internet.dx, greaterThan(tutorial.dx));
+      expect(hardware.dx, greaterThan(internet.dx));
+      for (final center in [tutorial, internet, hardware]) {
+        expect(center.dy, closeTo(pond.dy, 1));
+      }
+      sync.phoneOnline.value = false;
+      sync.lastSynced.value = null;
+      await tester.pumpAndSettle();
+      expect(find.text('Offline'), findsOneWidget);
+      expect(find.text('Not synced yet'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.byIcon(Icons.help_outline_rounded));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump();
+      expect(find.text(L('Farm / Pond', 'Farm at Palaisdaan')), findsOneWidget);
+      await tester.tap(find.text(L('Skip', 'Laktawan')));
+      await tester.pumpAndSettle();
+    });
     test('relativeLabel describes each elapsed span', () {
       final now = DateTime.now();
       expect(SyncService.relativeLabel(null), 'never');

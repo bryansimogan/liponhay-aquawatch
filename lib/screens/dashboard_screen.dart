@@ -242,8 +242,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() => _refreshing = true);
     _updateReading();
 
-    // Long enough for the fish to register as a step rather than a blink.
-    await Future<void>.delayed(const Duration(milliseconds: 900));
+    // Keep the loader visible during the server catch-up.
+    await Future.wait([
+      _sync.refreshNow(),
+      Future<void>.delayed(const Duration(milliseconds: 900)),
+    ]);
     if (mounted) setState(() => _refreshing = false);
   }
 
@@ -264,6 +267,57 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.dispose();
   }
 
+  Widget _monitoringHeader(Pond pond) {
+    final theme = AppTheme.of(context);
+    return LayoutBuilder(builder: (context, constraints) {
+      final compact = constraints.maxWidth < 345;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Monitoring',
+              style: TextStyle(fontSize: 11, color: theme.inkSoft)),
+          Row(
+            children: [
+              Expanded(
+                child: FittedBox(
+                  key: _kPond,
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text('${pond.name} · ${pond.species}',
+                      maxLines: 1,
+                      style: TextStyle(
+                        fontSize: compact ? 15 : 17,
+                        fontWeight: FontWeight.w700,
+                        color: theme.ink,
+                      )),
+                ),
+              ),
+              IconButton(
+                onPressed: _startTour,
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 32),
+                padding: EdgeInsets.all(compact ? 4 : 6),
+                tooltip: L('Replay app tour', 'Ulitin ang gabay'),
+                icon: Icon(Icons.help_outline_rounded,
+                    size: 19, color: theme.inkSoft),
+              ),
+              ConstrainedBox(
+                constraints:
+                    BoxConstraints(maxWidth: constraints.maxWidth * .62),
+                child: FittedBox(
+                  key: _kConn,
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerRight,
+                  child: DashboardSyncPills(compact: compact),
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+    });
+  }
+
   /// Shown when the controller has not reported yet.
   ///
   /// Scrollable on purpose: pull-to-refresh needs something that scrolls, and
@@ -273,10 +327,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
       children: [
-        const Align(alignment: Alignment.centerRight, child: SyncPill()),
+        _monitoringHeader(Pond.byId(_pondId)),
         const SizedBox(height: 12),
-        const SyncBanner(),
-        const SizedBox(height: 8),
         Container(
           padding: const EdgeInsets.symmetric(vertical: 34, horizontal: 22),
           decoration: AppTheme.of(context).card(),
@@ -357,74 +409,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               padding:
                                   const EdgeInsets.fromLTRB(16, 14, 16, 20),
                               children: [
-                                // Title row + sync chip
-                                Reveal(
-                                  child: Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Expanded(
-                                        child: Column(
-                                          key: _kPond,
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              'Monitoring',
-                                              style: TextStyle(
-                                                fontSize: 11,
-                                                color: AppTheme.of(context)
-                                                    .inkSoft,
-                                              ),
-                                            ),
-                                            Text(
-                                              '${pond.name} · ${pond.species}',
-                                              style: TextStyle(
-                                                fontSize: 17,
-                                                fontWeight: FontWeight.w700,
-                                                color: AppTheme.of(context).ink,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      Padding(
-                                        padding: const EdgeInsets.only(top: 2),
-                                        child: Row(
-                                          children: [
-                                            IconButton(
-                                              onPressed: _startTour,
-                                              visualDensity:
-                                                  VisualDensity.compact,
-                                              constraints:
-                                                  const BoxConstraints(),
-                                              padding: const EdgeInsets.all(6),
-                                              tooltip: L(
-                                                'Replay app tour',
-                                                'Ulitin ang gabay',
-                                              ),
-                                              icon: Icon(
-                                                Icons.help_outline_rounded,
-                                                size: 19,
-                                                color: AppTheme.of(context)
-                                                    .inkSoft,
-                                              ),
-                                            ),
-                                            const SizedBox(width: 2),
-                                            KeyedSubtree(
-                                              key: _kConn,
-                                              child: ConstrainedBox(
-                                                constraints: BoxConstraints(
-                                                    maxWidth: 180),
-                                                child: SyncPill(),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
+                                Reveal(child: _monitoringHeader(pond)),
                                 const SizedBox(height: 12),
 
                                 // 2 × 2 grid of readings
@@ -626,23 +611,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ],
                 ),
               ),
-              const Spacer(),
+              const SizedBox(width: 4),
               // Status pill animates its colour as the level changes.
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 320),
-                curve: Curves.easeOut,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.14),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Text(
-                  r.level.toUpperCase(),
-                  style: TextStyle(
-                    fontSize: 9.5,
-                    fontWeight: FontWeight.w700,
-                    color: color,
-                    letterSpacing: 0.3,
+              Expanded(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerRight,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 320),
+                    curve: Curves.easeOut,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: color.withOpacity(0.14),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Text(
+                      r.level.toUpperCase(),
+                      style: TextStyle(
+                        fontSize: 9.5,
+                        fontWeight: FontWeight.w700,
+                        color: color,
+                        letterSpacing: 0.3,
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -654,32 +646,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
             style: TextStyle(fontSize: 11, color: AppTheme.of(context).inkSoft),
           ),
           const SizedBox(height: 2),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
-            children: [
-              CountUpDecimal(
-                r.value,
-                decimals: r.decimals,
-                duration: const Duration(milliseconds: 850),
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w700,
-                  color: AppTheme.of(context).ink,
-                  height: 1.1,
-                ),
-              ),
-              if (r.unit.isNotEmpty) ...[
-                const SizedBox(width: 3),
-                Text(
-                  r.unit,
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                CountUpDecimal(
+                  r.value,
+                  decimals: r.decimals,
+                  duration: const Duration(milliseconds: 850),
                   style: TextStyle(
-                    fontSize: 12,
-                    color: AppTheme.of(context).inkSoft,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.of(context).ink,
+                    height: 1.1,
                   ),
                 ),
+                if (r.unit.isNotEmpty) ...[
+                  const SizedBox(width: 3),
+                  Text(
+                    r.unit,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppTheme.of(context).inkSoft,
+                    ),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
           const SizedBox(height: 4),
           Text(r.condition, style: TextStyle(fontSize: 11, color: color)),

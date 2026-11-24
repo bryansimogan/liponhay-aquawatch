@@ -18,11 +18,17 @@ class FirebaseService {
   // ---- SENSOR DATA ----
 
   /// Get a real-time stream of the CURRENT reading for a specific pond.
-  Stream<SensorData?> currentReadingStream(String pondId) =>
-      _db.child('ponds').child(pondId).child('current').onValue.map((event) {
-        final data = event.snapshot.value;
-        return data is Map ? SensorData.tryFromHistoryMap(data) : null;
-      });
+  Stream<SensorData?> currentReadingStream(String pondId) => _db
+      .child('ponds/$pondId/current')
+      .onValue
+      .map((e) => _sensor(e.snapshot));
+
+  static SensorData? _sensor(DataSnapshot snapshot, {bool history = false}) =>
+      switch (snapshot.value) {
+        Map data => SensorData.tryFromHistoryMap(data,
+            key: history ? snapshot.key : null),
+        _ => null,
+      };
 
   /// The firmware's history keys are epoch timestamps. Watch the recent tail
   /// so a stalled current node cannot hide newer measured readings.
@@ -33,11 +39,34 @@ class FirebaseService {
       .onValue
       .map((event) => [
             for (final child in event.snapshot.children)
-              if (child.value case final Map row)
-                if (SensorData.tryFromHistoryMap(row, key: child.key)
-                    case final reading?)
-                  reading,
+              if (_sensor(child, history: true) case final reading?) reading,
           ]..sort((a, b) => a.timestamp.compareTo(b.timestamp)));
+
+  /// A foreground catch-up reads the current node and a small recent history
+  /// window. A failure on either branch still lets its counterpart succeed.
+  Future<List<SensorData>> pollHardwareReadings(String pondId) async {
+    Future<DataSnapshot?> read(Query query) async {
+      try {
+        return await query.get().timeout(const Duration(seconds: 4));
+      } catch (_) {
+        return null;
+      }
+    }
+
+    final pond = _db.child('ponds/$pondId');
+    final snapshots = await Future.wait([
+      read(pond.child('current')),
+      read(pond.child('history').orderByKey().limitToLast(3)),
+    ]);
+    final [current, history] = snapshots;
+    return [
+      if (current != null)
+        if (_sensor(current) case final sensor?) sensor,
+      if (history != null)
+        for (final child in history.children)
+          if (_sensor(child, history: true) case final sensor?) sensor,
+    ]..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+  }
 
   /// Emits only the newest saved History row and then every newer row.
   Stream<SensorData> latestHistoryStream(String pondId) => _db

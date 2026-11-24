@@ -12,7 +12,8 @@ import 'offline_cache_service.dart';
 class SyncService with WidgetsBindingObserver {
   SyncService({DateTime Function()? clock}) : _clock = clock ?? DateTime.now;
   static final SyncService instance = SyncService();
-  static const deviceStaleAfter = Duration(minutes: 2);
+  static const deviceStaleAfter = Duration(milliseconds: 120000);
+  static const _pollInterval = Duration(seconds: 5);
   static const _maxClockLead = Duration(minutes: 5);
   static const _internetChannel = MethodChannel('aquawatch/internet');
   final DateTime Function() _clock;
@@ -36,6 +37,7 @@ class SyncService with WidgetsBindingObserver {
   bool _started = false;
   bool _hasSession = false;
   bool _checkingInternet = false;
+  bool _pollInFlight = false;
   int _internetMisses = 0;
   int _ticks = 0;
   int _generation = 0;
@@ -46,6 +48,7 @@ class SyncService with WidgetsBindingObserver {
   DateTime? _confirmedServerAt;
   SensorData? _pendingCurrent;
   List<SensorData> _pendingHistory = const [];
+  Future<List<SensorData>> Function()? _pollReadings;
   DateTime get serverNow => _clock().add(_offset);
 
   Future<void> start({
@@ -54,6 +57,7 @@ class SyncService with WidgetsBindingObserver {
     Stream<Duration>? serverTimeOffsets,
     Stream<SensorData?> Function()? currentReadings,
     Stream<List<SensorData>> Function()? historyReadings,
+    Future<List<SensorData>> Function()? pollReadings,
   }) async {
     if (_started) return;
     _started = true;
@@ -61,6 +65,8 @@ class SyncService with WidgetsBindingObserver {
     _production = connections == null;
     final database = _production ? FirebaseDatabase.instance : null;
     final firebase = FirebaseService();
+    _pollReadings = pollReadings ??
+        (_production ? () => firebase.pollHardwareReadings('pond1') : null);
     if (_production) {
       final cached = await OfflineCacheService.current('pond1');
       if (!_started || generation != _generation) return;
@@ -97,7 +103,7 @@ class SyncService with WidgetsBindingObserver {
       void retry() {
         if (!_started || generation != _generation || _retry?.isActive == true)
           return;
-        _retry = Timer(const Duration(seconds: 5), subscribe);
+        _retry = Timer(_pollInterval, subscribe);
       }
 
       unawaited(_current?.cancel());
@@ -129,13 +135,10 @@ class SyncService with WidgetsBindingObserver {
           subscribe();
         }
         // A snapshot can arrive immediately before Firebase announces its session.
-        final reading = latestReading.value;
-        if (reading != null && _seenOnStream == reading.timestamp) {
-          _confirm(reading.timestamp);
-          receivedReading.value = reading;
-        }
+        final reading = _pendingCurrent;
+        if (reading != null) _receive(reading);
         _acceptHistory();
-        if (_production) unawaited(_checkInternet());
+        unawaited(refreshNow());
       } else {
         _serverGrace = Timer(const Duration(seconds: 5), () {
           serverOnline.value = false;
@@ -148,13 +151,18 @@ class SyncService with WidgetsBindingObserver {
 
     subscribe();
     _tick = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_production && ++_ticks % 5 == 0) unawaited(_checkInternet());
+      if (++_ticks % _pollInterval.inSeconds == 0) {
+        if (_production) unawaited(_checkInternet());
+        final lastReceipt = _confirmedAt;
+        if (lastReceipt == null ||
+            _clock().difference(lastReceipt) >= _pollInterval) {
+          unawaited(_pollNewest());
+        }
+      }
       refresh();
     });
     refresh();
   }
-
-  int? _seenOnStream;
 
   void _acceptHistory() {
     final valid =
@@ -164,16 +172,15 @@ class SyncService with WidgetsBindingObserver {
   }
 
   void _receive(SensorData reading) {
-    if (!_plausible(reading.timestamp)) return;
+    if (!_hasSession || !_plausible(reading.timestamp)) return;
     final previous = latestReading.value;
     if (previous != null &&
         _plausible(previous.timestamp) &&
         reading.timestamp < previous.timestamp &&
         !(previous.timestamp > serverNow.millisecondsSinceEpoch &&
-            _seenOnStream == null)) return;
+            _confirmedTimestamp == null)) return;
 
-    _seenOnStream = reading.timestamp;
-    if (_hasSession) _confirm(reading.timestamp);
+    _confirm(reading.timestamp);
     if (previous?.timestamp != reading.timestamp ||
         receivedReading.value == null) {
       lastSynced.value = reading.dateTime;
@@ -183,7 +190,7 @@ class SyncService with WidgetsBindingObserver {
             .catchError((Object _) {}));
       }
     }
-    if (_hasSession) receivedReading.value = latestReading.value;
+    receivedReading.value = latestReading.value;
     refresh();
   }
 
@@ -228,9 +235,38 @@ class SyncService with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && _started) {
-      refresh();
-      unawaited(_checkInternet());
+    if (state == AppLifecycleState.resumed) unawaited(refreshNow());
+  }
+
+  Future<void> refreshNow() async {
+    if (!_started) return;
+    refresh();
+    await Future.wait([
+      if (_production) _checkInternet(),
+      _pollNewest(),
+    ]);
+  }
+
+  Future<void> _pollNewest() async {
+    final poll = _pollReadings;
+    if (!_hasSession || !_started || _pollInFlight || poll == null) return;
+    final generation = _generation;
+    _pollInFlight = true;
+    try {
+      final readings = await poll();
+      if (!_started || generation != _generation || !_hasSession) return;
+      SensorData? newest;
+      for (final reading in readings) {
+        if (_plausible(reading.timestamp) &&
+            (newest == null || reading.timestamp > newest.timestamp)) {
+          newest = reading;
+        }
+      }
+      if (newest != null) _receive(newest);
+    } catch (_) {
+      // The live subscription and freshness timer keep running after a read failure.
+    } finally {
+      _pollInFlight = false;
     }
   }
 

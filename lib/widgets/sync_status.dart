@@ -2,6 +2,58 @@ import 'package:flutter/material.dart';
 import '../app_theme.dart';
 import '../services/sync_service.dart';
 
+/// The Dashboard uses a single row and leaves connection diagnostics to Settings.
+class DashboardSyncPills extends StatelessWidget {
+  const DashboardSyncPills({super.key, this.compact = false});
+
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final sync = SyncService.instance;
+    final palette = AppTheme.of(context);
+    return ListenableBuilder(
+      listenable: Listenable.merge(
+          [sync.phoneOnline, sync.online, sync.lastSynced, sync.ageLabel]),
+      builder: (context, _) {
+        final internet = sync.phoneOnline.value;
+        final synced = sync.online.value;
+        final last = sync.lastSynced.value;
+        final internetColor = internet == true
+            ? (Theme.of(context).brightness == Brightness.dark
+                ? const Color(0xFF70D79C)
+                : const Color(0xFF267447))
+            : palette.amber;
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _Chip(
+              dot: true,
+              label: switch (internet) {
+                true => 'Online',
+                false => 'Offline',
+                null => 'Checking',
+              },
+              color: internetColor,
+              compact: compact,
+            ),
+            SizedBox(width: compact ? 3 : 5),
+            _Chip(
+              label: synced
+                  ? 'Synced'
+                  : last == null
+                      ? 'Not synced yet'
+                      : 'Last synced ${sync.ageLabel.value}',
+              color: synced ? palette.aqua : palette.amber,
+              compact: compact,
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
 /// Distinct connection states using the existing compact status chips.
 class SyncPill extends StatelessWidget {
   const SyncPill({super.key});
@@ -47,12 +99,16 @@ class SyncPill extends StatelessWidget {
 }
 
 class _Chip extends StatelessWidget {
-  final IconData icon;
+  final IconData? icon;
+  final bool dot;
+  final bool compact;
   final String label;
   final Color color;
 
   const _Chip({
-    required this.icon,
+    this.icon,
+    this.dot = false,
+    this.compact = false,
     required this.label,
     required this.color,
   });
@@ -62,7 +118,8 @@ class _Chip extends StatelessWidget {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 280),
       curve: Curves.easeOutCubic,
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      padding: EdgeInsets.symmetric(
+          horizontal: compact ? 5 : 8, vertical: compact ? 4 : 5),
       decoration: BoxDecoration(
         color: color.withOpacity(0.09),
         borderRadius: BorderRadius.circular(999),
@@ -70,15 +127,24 @@ class _Chip extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 220),
-            child: Icon(icon, key: ValueKey(icon), size: 12, color: color),
-          ),
-          const SizedBox(width: 5),
+          if (icon != null) ...[
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              child: Icon(icon, key: ValueKey(icon), size: 12, color: color),
+            ),
+            const SizedBox(width: 5),
+          ] else if (dot) ...[
+            Container(
+              width: 6,
+              height: 6,
+              decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+            ),
+            const SizedBox(width: 4),
+          ],
           Text(
             label,
             style: TextStyle(
-              fontSize: 10.5,
+              fontSize: compact ? 10 : 10.5,
               fontWeight: FontWeight.w600,
               color: color,
             ),

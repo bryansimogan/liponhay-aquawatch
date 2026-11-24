@@ -122,6 +122,52 @@ void main() {
     }
   });
 
+  testWidgets('foreground catch-up and polling never renew a replayed sample',
+      (tester) async {
+    var now = DateTime.utc(2026, 11, 23, 9);
+    SensorData sample() => SensorData(
+        ph: 7,
+        temperature: 29,
+        dissolvedOxygen: 6,
+        timestamp: now.millisecondsSinceEpoch);
+    final link = StreamController<bool>.broadcast(sync: true);
+    final current = StreamController<SensorData?>.broadcast(sync: true);
+    var candidate = sample();
+    var reads = 0;
+    final sync = SyncService(clock: () => now);
+    await sync.start(
+      connections: link.stream,
+      currentReadings: () => current.stream,
+      pollReadings: () async {
+        reads++;
+        return [candidate];
+      },
+    );
+    try {
+      current.add(candidate);
+      expect(sync.lastSynced.value, isNull);
+      link.add(true);
+      await tester.pump();
+      expect(reads, 1);
+      expect(sync.online.value, isTrue);
+      final saved = sync.lastSynced.value;
+      now = now.add(SyncService.deviceStaleAfter);
+      await tester.pump(const Duration(seconds: 5));
+      expect(reads, 2);
+      expect(sync.online.value, isFalse);
+      expect(sync.lastSynced.value, saved);
+      candidate = sample();
+      await sync.refreshNow();
+      expect(reads, 3);
+      expect(sync.latestReading.value, candidate);
+      expect(sync.online.value, isTrue);
+    } finally {
+      sync.dispose();
+      unawaited(link.close());
+      unawaited(current.close());
+    }
+  });
+
   test('UTC seconds and history keys normalize to epoch milliseconds', () {
     final ms = DateTime.utc(2026, 11, 23, 8, 30).millisecondsSinceEpoch;
     final map = {'ph': 7.1, 'temperature': 29, 'dissolved_oxygen': 6.0};
